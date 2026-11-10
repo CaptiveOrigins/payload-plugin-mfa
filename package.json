@@ -1,0 +1,65 @@
+{
+  "name": "@captiveorigins/payload-plugin-two-step",
+  "version": "0.1.0",
+  "description": "Two-step sign-in for Payload: an authenticator code after the password, with email and recovery codes as backups, each used once, rate limited per account, and required by a rule you set.",
+  "keywords": [
+    "payload",
+    "payload-plugin",
+    "payloadcms",
+    "two-step",
+    "two-factor",
+    "2fa",
+    "totp",
+    "mfa",
+    "recovery-codes",
+    "authentication"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/CaptiveOrigins/payload-plugin-two-step#readme",
+  "bugs": {
+    "url": "https://github.com/CaptiveOrigins/payload-plugin-two-step/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CaptiveOrigins/payload-plugin-two-step.git"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "otpauth": "9.6.0"
+  },
+  "peerDependencies": {
+    "payload": "^3.80.0"
+  },
+  "devDependencies": {
+    "@payloadcms/db-mongodb": "3.92.1",
+    "@types/node": "^24.0.0",
+    "graphql": "^16.14.2",
+    "mongodb-memory-server": "^11.3.0",
+    "payload": "3.92.1",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.0"
+  }
+}
