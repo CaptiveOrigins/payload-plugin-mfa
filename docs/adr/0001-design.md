@@ -28,15 +28,18 @@ The site's version has been audited and works. This ADR keeps its behavior and f
    - A required account that hasn't enrolled is refused at sign-in with `enroll`, so a stolen password can't enroll its own phone at first sign-in. A site lets someone enroll through a short window, `allowEnrollment(payload, userId, hours)` (default 24 hours, logged), set by staff.
    - Exemptions such as an automation account are the site's `requiredFor`, never built into the plugin.
 
-5. **Remembered browser.** After a good code the site may set the remember cookie (HttpOnly, SameSite=Lax, Secure outside dev). Its value is an HMAC over the account id, the expiry, the sealed secret and the password hash, so a new password or a new secret ends it.
+5. **Remembered browser, per session.** After a good code the site may set the remember cookie (HttpOnly, SameSite=Lax, Secure outside dev). Its value is an HMAC over the account id, the expiry, the sealed secret and the password hash, so a new password or a new secret ends it.
    - It lasts `rememberHours` (default 24).
    - A session can't outlive it: refresh is refused once `now − verifiedAt > remember − tokenExpiration`, using the collection's own `tokenExpiration`, not a hard-coded two hours as in the site today.
+   - **`verifiedAt` is kept per session**, keyed by Payload's session id (`sid`), not per account, so a code given on one device doesn't extend another. Entries for expired sessions are dropped when a session is added.
 
 6. **After a password reset.** Whoever holds the mailbox has just proved that, so the mailbox can't also be the second step: email codes are off for `emailBlockHours` (default 24) and any outstanding one is cleared.
    - **The plugin enforces it** in an `afterOperation` hook on `resetPassword`, and through `afterPasswordSet(payload, userId)` for a site's own invitation flow. The site no longer has to remember to call it.
 
 7. **Rate limits, built in and keyed inside.** Every code check (sign-in, `verify`, enrol, disable, new recovery codes) and every email-code send goes through the limiter.
-   - **The key is built inside the plugin** from the account id (plus the client address when a `clientAddress` function is given), never passed in by a caller, so a caller can't change it to dodge the limit.
+   - **The key is built inside the plugin** from the account id, never passed in by a caller, so a caller can't change it to dodge the limit.
+   - **The per-account limit never includes the address**, so rotating addresses gives no fresh tries. A per-address limit can be added on top when the site gives `clientAddress`.
+   - Wrong codes count toward this per-account limit, which works as the code's own lockout (Payload's 5-failure lock counts only wrong passwords).
    - The limiter is an adapter, `limit({ kind: 'code' | 'emailCode', key, req }) => boolean`; the Guardrails plugin will provide one later. Without it, a built-in fixed window with hashed keys (defaults: 5 codes and 3 email codes per 15 minutes per account).
    - A limiter that throws refuses. A refused code reads exactly like a wrong one.
 
@@ -47,7 +50,7 @@ The site's version has been audited and works. This ADR keeps its behavior and f
    - Hats' `stepUp` becomes `{ available: (u) => isOn(u), verify: ({ user, code, req }) => verify(payload, { user, code, req }) }`.
 
 10. **Managing it.** Server functions for a site's own pages:
-    - `start(userId)`, after the site has checked the password: returns the QR link and manual key, and keeps the secret pending.
+    - `start(userId, { code? })`, after the site has checked the password: returns the QR link and manual key, and keeps the secret pending. **If two-step is already on, it refuses unless a current app or recovery code comes with it**, so a session plus a password (or a site bug that skips the password check) can't move the factor to another phone.
     - `confirm(userId, code)`: turns it on and returns the recovery codes once.
     - `turnOff(userId, code)` and `newRecoveryCodes(userId, code)`, after the site has checked the password.
     - `sendEmailCode(email)`: the same answer whether or not the address exists or has two-step.
@@ -86,3 +89,20 @@ The sign-in, My Information and reset pages and their wording (the plugin return
 ## Open
 
 - The default React panel and passkeys are left for 0.2. Nothing is promised in 0.1.
+
+## Changes after Platform's pre-publish read (2026-11-10)
+
+Platform read this ADR at `87d92cd`. Each point, and what changed:
+
+1. **Must: the per-account limit must not include the address.** Done in decision 7: always per account, with an optional per-address limit on top. Test: 5 wrong codes from address A, then the 6th from B is still refused.
+2. **Must: `start()` on an account already on.** Done in decision 10: it needs a current app or recovery code.
+3. **Must: API keys and custom strategies skip `beforeLogin`.** The plugin **refuses to start if the auth collection has `useAPIKey` on**. Custom auth strategies are documented as the site's job, with `isOn(user)` and `requiredFor` exported for the site to use. Captive Origins has no API keys.
+4. **Should: `verifiedAt` per session.** Done in decision 5, keyed by `sid`. Test: a code on device A doesn't extend device B.
+5. **Should: last TOTP step.** Every accepted app code stores its step, and any step ≤ the last is refused; the `version` guard covers races. Test: the same code is refused even after waiting one step, while still in the drift window.
+6. **Should: requirement on sessions that never refresh.** The plugin wraps the auth strategies of the users collection (as Hats does): a session whose account is now required but hasn't enrolled is signed out on its next request. The README says what this costs (one `requiredFor` call per authenticated request).
+7. **Should: the login endpoint.** `/two-step/login` calls Payload's `login` (its lockout, CSRF and cookie rules apply). Wrong codes count toward decision 7's per-account limit. An unknown email answers exactly like a wrong password.
+8. **Should: the enrolment window ends at the first successful confirm.** Done.
+9. **Should: constant-time comparisons.** The email-code HMAC, the recovery hash and the remember HMAC all use `timingSafeEqual` (recovery is checked against every stored hash, not with `includes`).
+10. **Note.** The README says the plugin's own state writes use `updateOne` (so they skip audit hooks), and that `onEvent` is the record.
+
+Not changed: `TRUSTED` through `req.context`, and unsalted SHA-256 for 80-bit recovery codes. Platform agreed both are fine.
