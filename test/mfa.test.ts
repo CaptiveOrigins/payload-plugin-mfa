@@ -358,7 +358,37 @@ describe('status and a maintainer’s reset', () => {
     expect(await reason(login(staff, { code: recoveryCodes[1] }))).toBe('enroll')
     expect(await reason(login(staff, { remember: remembered }))).toBe('enroll')
     await expect(resetFor(payload, staff.id, { enrollHours: 0 })).rejects.toThrow(/enrollHours/)
+    await expect(resetFor(payload, staff.id, { enrollHours: 24 * 14 + 1 })).rejects.toThrow(/enrollHours/)
+    await expect(resetFor(payload, staff.id, { enrollHours: Number.NaN })).rejects.toThrow(/enrollHours/)
     await expect(resetFor(payload, 'aaaaaaaaaaaaaaaaaaaaaaaa')).rejects.toMatchObject({ reason: 'notFound' })
+  })
+
+  it('signs the account out everywhere, unless told not to, and keeps a block on emailed codes', async () => {
+    const u = await make()
+    const { key } = await enrol(u)
+    const { token } = await login(u, { code: nextStepCode(key) })
+    const who = async () => (await payload.auth({ headers: new Headers({ Authorization: `JWT ${token}` }) })).user
+    expect(await who()).toBeTruthy()
+    await afterPasswordSet(payload, { userId: u.id })
+    const blocked = (await state(u)).twoStep.emailBlockedUntil
+    expect(blocked).toBeTruthy()
+    await resetFor(payload, u.id)
+    expect(await who()).toBeNull()
+    expect((await state(u)).twoStep.emailBlockedUntil).toBe(blocked)
+    const v = await make()
+    const { token: kept } = await login(v)
+    await resetFor(payload, v.id, { endSessions: false })
+    expect((await payload.auth({ headers: new Headers({ Authorization: `JWT ${kept}` }) })).user).toBeTruthy()
+  })
+
+  it('wins against a racing write that would keep the old secret', async () => {
+    for (let i = 0; i < 5; i++) {
+      const u = await make()
+      const { key } = await enrol(u)
+      // newRecoveryCodesFor writes the whole state back, old secret included, if its version check is skipped.
+      await Promise.allSettled([newRecoveryCodesFor(payload, { userId: u.id, code: nextStepCode(key) }), resetFor(payload, u.id)])
+      expect((await state(u)).twoStep.secret ?? null).toBeNull()
+    }
   })
 
   it('clears the account’s limiter tries, and loses no write to a racing sign-in', async () => {

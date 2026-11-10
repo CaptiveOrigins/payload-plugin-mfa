@@ -226,10 +226,13 @@ export async function statusFor(payload: Payload, userId: string | number, req?:
  * app, recovery codes, emailed code and per-session records through the version-checked write, so a sign-in
  * racing it can't keep the old state; remembered browsers stop working because they're tied to the secret.
  * Opens an enrollment window (default 24 hours) so a required account can sign in to set up again, clears the
- * account's limiter tries, and records a `reset` event with who did it. A block on emailed codes after a
- * password reset is kept. Server-only: the site checks the maintainer and confirms who they're resetting.
+ * account's limiter tries, signs the account out everywhere (`endSessions`, default true: a stolen phone may
+ * have a session open), and records a `reset` event with who did it (an id, never an address). A block on emailed
+ * codes after a password reset is kept. Server-only: the site checks the maintainer and confirms who they're
+ * resetting. The window lets whoever knows the password set up a phone, so keep it short, and reset the
+ * password too if it may be known.
  */
-export async function resetFor(payload: Payload, userId: string | number, args: { enrollHours?: number; actor?: string | number | null; req?: PayloadRequest } = {}) {
+export async function resetFor(payload: Payload, userId: string | number, args: { enrollHours?: number; actor?: string | number | null; endSessions?: boolean; req?: PayloadRequest } = {}) {
   const hours = args.enrollHours ?? 24
   if (!(hours > 0 && hours <= 24 * 14)) throw new Error('mfa: enrollHours must be more than 0 and at most 336 (14 days).')
   const user = await loadUser(payload, userId, args.req)
@@ -251,6 +254,8 @@ export async function resetFor(payload: Payload, userId: string | number, args: 
     }
     if (await saveIfUnchanged(payload, user!.id, loaded, cleared, args.req)) {
       await clearAccountTries(payload, user!.id, args.req)
+      // Payload keeps the account's open sessions on the account itself: emptying them signs it out everywhere.
+      if (args.endSessions !== false) await payload.db.updateOne({ collection: optionsOf(payload).users, where: { id: { equals: user!.id } } as never, data: { sessions: [] }, ...(args.req ? { req: args.req } : {}) })
       await emit(payload, { type: 'reset', user: String(user!.id), req: args.req, detail: { by: args.actor === undefined || args.actor === null ? null : String(args.actor), hours } })
       return
     }
