@@ -70,7 +70,7 @@ export type MfaOptions = {
   sendEmailCode?: (args: { payload: Payload; to: string; code: string; minutes: number; req?: PayloadRequest }) => Promise<unknown>
   /** Every change and refusal worth recording, for an audit trail. */
   onEvent?: (event: MfaEvent) => void | Promise<void>
-  /** Add `POST /api/<users>/two-step/login` for sites without server actions. Default false. */
+  /** Add `POST /api/<users>/mfa/login` for sites without server actions. Default false. */
   endpoint?: boolean
 }
 
