@@ -28,7 +28,7 @@ export type MfaState = {
 export type MfaUser = { id: string | number; email?: string | null; collection?: string; hash?: string | null; sessions?: { id: string; expiresAt?: string | Date }[] | null; _sid?: string } & Record<string, unknown>
 
 export type MfaEvent = {
-  type: 'started' | 'confirmed' | 'turned-off' | 'recovery-renewed' | 'recovery-used' | 'email-code-sent' | 'email-codes-blocked' | 'enrollment-window' | 'too-many-tries'
+  type: 'started' | 'confirmed' | 'turned-off' | 'recovery-renewed' | 'recovery-used' | 'email-code-sent' | 'email-codes-blocked' | 'enrollment-window' | 'too-many-tries' | 'reset'
   user: string
   req?: PayloadRequest
   /** Never a code, a secret or an address. */

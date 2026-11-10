@@ -114,6 +114,17 @@ async function builtIn(payload: Payload, kind: LimitKind, key: string): Promise<
   return (docs as unknown as { id: string | number }[]).some((d) => String(d.id) === String(mine.id))
 }
 
+/**
+ * Clears the built-in limiter's tries for one account (not for its addresses, which other accounts share). A site
+ * with its own limiter clears its own.
+ */
+export async function clearAccountTries(payload: Payload, userId: string | number, req?: PayloadRequest) {
+  const o = optionsOf(payload)
+  if (o.limit) return
+  const hashes = (['code', 'emailCode'] as const).map((kind) => createHash('sha256').update(`${payload.secret}|mfa|${kind}|account:${String(userId)}`).digest('hex'))
+  await payload.db.deleteMany({ collection: o.attempts, where: { keyHash: { in: hashes } } as never, ...(req ? { req } : {}) })
+}
+
 /** True to allow. Refuses on any error (fails closed). */
 export async function allowed(payload: Payload, kind: 'code' | 'emailCode', userId: string | number, req?: PayloadRequest): Promise<boolean> {
   const o = optionsOf(payload)

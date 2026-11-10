@@ -22,3 +22,5 @@ Dated decisions for this repo, newest last.
 - D8 Seed World: the collections this plugin adds were sent to Seed World ahead of the site wiring (2026-11-10). Platform's wiring PR sends the at-merge notice.
 - D12 no family tags yet: the keywords carry no family word (`identity` isn't one of them); the category stays `authentication`.
 - D9, D10, D11, D13, D14, D15, D16: don't apply to this repo.
+
+- 2026-11-10 (Plugins Lead, K25): added `statusFor` and `resetFor` for the Captive Origins site wiring, as Web Platform asked through Plugin Security, so the site stops reading `mfa-state` directly. Server-only, with no endpoint. The reset goes through the version-checked write, and clears the account's own limiter tries but not per-address ones, which other accounts share. Built on the `status-and-reset` branch. It merges to main after its own security read, so the owner's first publish (N99) includes it only once it's been read.

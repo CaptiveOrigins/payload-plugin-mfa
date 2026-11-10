@@ -5,6 +5,7 @@ import {
   acceptCode,
   acceptPending,
   allowed,
+  clearAccountTries,
   emailBlocked,
   emit,
   isOnState,
@@ -208,4 +209,51 @@ export async function afterPasswordSet(payload: Payload, args: { userId: string 
     }
   }
   throw new Error('mfa: could not block email codes after the new password; try again.')
+}
+
+/**
+ * For the account's own security page: whether two-step is on, since when, and how many recovery codes are left.
+ * Server-only: there's no endpoint for it. Says nothing about the secret or the codes themselves.
+ */
+export async function statusFor(payload: Payload, userId: string | number, req?: PayloadRequest): Promise<{ on: boolean; since: string | null; recoveryLeft: number }> {
+  const { state } = await loadState(payload, userId, req)
+  const on = isOnState(state)
+  return { on, since: on ? (state.enabledAt ?? null) : null, recoveryLeft: on ? (state.recovery ?? []).length : 0 }
+}
+
+/**
+ * A maintainer's reset, without a code, for someone who lost their app and their recovery codes. Clears the
+ * app, recovery codes, emailed code and per-session records through the version-checked write, so a sign-in
+ * racing it can't keep the old state; remembered browsers stop working because they're tied to the secret.
+ * Opens an enrollment window (default 24 hours) so a required account can sign in to set up again, clears the
+ * account's limiter tries, and records a `reset` event with who did it. A block on emailed codes after a
+ * password reset is kept. Server-only: the site checks the maintainer and confirms who they're resetting.
+ */
+export async function resetFor(payload: Payload, userId: string | number, args: { enrollHours?: number; actor?: string | number | null; req?: PayloadRequest } = {}) {
+  const hours = args.enrollHours ?? 24
+  if (!(hours > 0 && hours <= 24 * 14)) throw new Error('mfa: enrollHours must be more than 0 and at most 336 (14 days).')
+  const user = await loadUser(payload, userId, args.req)
+  if (!user) refuse('notFound', 'That account wasn’t found.')
+  for (let i = 0; i < 3; i++) {
+    const loaded = await loadState(payload, user!.id, args.req)
+    const cleared: MfaState = {
+      secret: null,
+      pending: null,
+      enabledAt: null,
+      lastStep: null,
+      recovery: [],
+      verifiedAt: null,
+      sessions: {},
+      emailCode: null,
+      emailCodeExpires: null,
+      emailBlockedUntil: loaded.state.emailBlockedUntil ?? null,
+      enrollUntil: new Date(Date.now() + hours * HOUR).toISOString(),
+    }
+    if (await saveIfUnchanged(payload, user!.id, loaded, cleared, args.req)) {
+      await clearAccountTries(payload, user!.id, args.req)
+      await emit(payload, { type: 'reset', user: String(user!.id), req: args.req, detail: { by: args.actor === undefined || args.actor === null ? null : String(args.actor), hours } })
+      return
+    }
+  }
+  refuse('busy', 'Something changed at the same moment. Please try again.')
 }

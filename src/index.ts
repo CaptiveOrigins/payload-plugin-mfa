@@ -1,5 +1,5 @@
 export { mfa, MfaError, moveLegacyState } from './plugin.js'
-export { afterPasswordSet, allowEnrollment, confirm, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, MfaRefused, verify } from './api.js'
+export { afterPasswordSet, allowEnrollment, confirm, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, statusFor, resetFor, turnOff, MfaRefused, verify } from './api.js'
 export { REMEMBER_COOKIE, MFA_CODE, MFA_REMEMBER, MFA_TRUSTED } from './core.js'
 export { codeFor } from './crypto.js'
 export type { Limiter, LimitKind, MfaEvent, MfaOptions, MfaState, MfaUser } from './types.js'

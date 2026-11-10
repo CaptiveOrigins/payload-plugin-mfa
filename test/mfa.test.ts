@@ -5,7 +5,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { BasePayload, buildConfig, createLocalReq, getPayload, type Endpoint, type Payload, type PayloadRequest, type SanitizedConfig } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, moveLegacyState, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, mfa, MFA_TRUSTED, verify, type Limiter, type MfaEvent } from '../src/index.js'
+import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, moveLegacyState, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, statusFor, resetFor, turnOff, mfa, MFA_TRUSTED, verify, type Limiter, type MfaEvent } from '../src/index.js'
 import { deriveKey, open, seal } from '../src/crypto.js'
 import { allowed, optionsOf } from '../src/core.js'
 
@@ -319,6 +319,56 @@ describe('changing the factor', () => {
     await turnOff(payload, { userId: u.id, code: nextStepCode(key) })
     expect(await isOnFor(payload, u.id)).toBe(false)
     expect(await reason(login(u))).toBe('signed in')
+  })
+})
+
+describe('status and a maintainer’s reset', () => {
+  it('reports on, since when and recovery codes left, and nothing for an account without it', async () => {
+    const u = await make()
+    expect(await statusFor(payload, u.id)).toEqual({ on: false, since: null, recoveryLeft: 0 })
+    const { recoveryCodes } = await enrol(u)
+    const s = await statusFor(payload, u.id)
+    expect(s.on).toBe(true)
+    expect(s.since).toBe((await state(u)).twoStep.enabledAt)
+    expect(s.recoveryLeft).toBe(recoveryCodes.length)
+    expect(await reason(login(u, { code: recoveryCodes[0] }))).toBe('signed in')
+    expect((await statusFor(payload, u.id)).recoveryLeft).toBe(recoveryCodes.length - 1)
+    expect(Object.keys(s)).toEqual(['on', 'since', 'recoveryLeft'])
+  })
+
+  it('resets without a code: the old app, recovery codes and remembered browsers stop working, and a required account must enrol again', async () => {
+    const staff = await make('staff')
+    await allowEnrollment(payload, { userId: staff.id, hours: 1 })
+    const { key, recoveryCodes } = await enrol(staff)
+    const remembered = await rememberValue(payload, { userId: staff.id })
+    expect(await reason(login(staff, { remember: remembered }))).toBe('signed in')
+    events.length = 0
+    await resetFor(payload, staff.id, { enrollHours: 2, actor: 'maintainer-1' })
+    expect(await statusFor(payload, staff.id)).toEqual({ on: false, since: null, recoveryLeft: 0 })
+    const after = (await state(staff)).twoStep
+    expect([after.secret, after.pending, after.recovery, after.emailCode, after.sessions]).toEqual([null, null, [], null, {}])
+    expect(new Date(after.enrollUntil).getTime() - Date.now()).toBeGreaterThan(1.9 * 60 * 60_000)
+    expect(events.map((e) => [e.type, e.detail])).toEqual([['reset', { by: 'maintainer-1', hours: 2 }]])
+    // The old code, a recovery code and the remembered browser give nothing: inside the window the account signs in
+    // with its password, to set up again.
+    await expect(login(staff, { code: nextStepCode(key) })).resolves.toBeTruthy()
+    expect(await isOnFor(payload, staff.id)).toBe(false)
+    await resetFor(payload, staff.id, { enrollHours: 1 })
+    await payload.db.updateOne({ collection: 'mfa-state', where: { user: { equals: String(staff.id) } }, data: { enrollUntil: new Date(Date.now() - 1000).toISOString() } } as never)
+    expect(await reason(login(staff, { code: recoveryCodes[1] }))).toBe('enroll')
+    expect(await reason(login(staff, { remember: remembered }))).toBe('enroll')
+    await expect(resetFor(payload, staff.id, { enrollHours: 0 })).rejects.toThrow(/enrollHours/)
+    await expect(resetFor(payload, 'aaaaaaaaaaaaaaaaaaaaaaaa')).rejects.toMatchObject({ reason: 'notFound' })
+  })
+
+  it('clears the account’s limiter tries, and loses no write to a racing sign-in', async () => {
+    const u = await make()
+    const { key } = await enrol(u)
+    for (let i = 0; i < 5; i++) await reason(login(u, { code: '000000' }))
+    expect(await reason(login(u, { code: nextStepCode(key) }))).not.toBe('signed in') // limit reached
+    await Promise.all([resetFor(payload, u.id), reason(login(u, { code: nextStepCode(key) }))])
+    expect(await statusFor(payload, u.id)).toMatchObject({ on: false })
+    expect(await allowed(payload, 'code', u.id)).toBe(true)
   })
 })
 

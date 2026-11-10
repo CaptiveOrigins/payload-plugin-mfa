@@ -32,3 +32,13 @@ Each promise in the README and ADR 0001, and the test that proves it (`test/mfa.
 | Old tries are deleted | "deletes tries older than the window…" |
 
 Gaps, skipped with reason: the built-in limiter's window rollover (simple count-since-time code, covered by the per-account test's refusal); `rememberHours` versus `tokenExpiration` at startup (a config check, low risk). Bigger: a test against a real browser flow belongs to the site's wiring.
+
+## 2026-11-10: statusFor and resetFor (K25)
+
+| Promise | Test |
+| --- | --- |
+| statusFor gives on, since and recovery left, and nothing else; recovery counts down | `status and a maintainer's reset > reports on…` |
+| resetFor clears the secret, recovery codes, emailed code and sessions; the old code, recovery codes and remembered browsers stop working; a required account must enrol once the window ends; `reset` event with the actor; bad window and unknown account refused | `status and a maintainer's reset > resets without a code…` |
+| resetFor clears the account's limiter tries, and wins or retries against a racing sign-in | `status and a maintainer's reset > clears the account's limiter tries…` |
+
+Gaps added: the three tests above. A mutation check caught 5 of 5 guards, after one assertion was added: kept recovery codes weren't caught at first, because a required account is refused for enrollment before any code is checked. Gaps skipped: a site's own limiter isn't cleared by resetFor (said in the README).

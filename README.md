@@ -2,7 +2,7 @@
 
 MFA for Payload (two-step sign-in): an authenticator code after the password, with emailed and recovery codes as backups, each used once, limited per account, and required by a rule you set.
 
-**Status:** early, 0.1.0, not on npm yet. 24 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
+**Status:** early, 0.1.0, not on npm yet. 27 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
 
 ## What it does
 
@@ -45,6 +45,8 @@ HTTP can't carry the code: it travels in `req.context`, which only your server c
 - **Step-up** before a sensitive action: `verify(payload, { user, code, req })`. For Hats: `stepUp: { available: (u) => isOnFor(payload, u.id), verify: ({ user, code, req }) => verify(payload, { user, code, req }) }`.
 - **Your own vouching:** pass `context: { [MFA_TRUSTED]: true }` to `payload.login` only from server code that has checked the person another way, or that throws the token away (for example, checking a password).
 - **Invitations:** after a password set through an emailed link, call `afterPasswordSet(payload, { userId })`.
+- **Status** for the person's own security page: `statusFor(payload, userId)` gives `{ on, since, recoveryLeft }`, and nothing about the secret or the codes.
+- **A maintainer's reset**, for someone who lost their app and their recovery codes: `resetFor(payload, userId, { enrollHours, actor })`. It needs no code, so check the maintainer and confirm the account in your own code first. It clears the app, the recovery codes, any emailed code and the per-session records. Remembered browsers stop working. It opens an enrollment window (default 24 hours, at most 14 days), clears the account's built-in limiter tries, and sends a `reset` event with `by` (the actor). A block on emailed codes after a password reset stays. Neither function has an endpoint.
 
 ## Moving from state kept on the account
 
