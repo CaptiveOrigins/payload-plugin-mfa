@@ -7,3 +7,4 @@ Dated decisions for this repo, newest last.
 - 2026-11-10: design proposed in docs/adr/0001-design.md, before any code (rules/build-it-right.md).
 - 2026-11-10: ADR 0001 updated for Platform's pre-publish read (every Must and Should taken; see its last section).
 - 2026-11-10: 0.1.0 built to ADR 0001, with 19 tests; four protections checked to fail their tests when removed.
+- 2026-11-10: after Platform's code read, state moved to its own collection (with a one-time move from the account), the limiter records before counting, and the key comes from the raw app secret. See ADR 0001's last section.

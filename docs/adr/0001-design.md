@@ -106,3 +106,16 @@ Platform read this ADR at `87d92cd`. Each point, and what changed:
 10. **Note.** The README says the plugin's own state writes use `updateOne` (so they skip audit hooks), and that `onEvent` is the record.
 
 Not changed: `TRUSTED` through `req.context`, and unsalted SHA-256 for 80-bit recovery codes. Platform agreed both are fine.
+
+## Changes after Platform's read of the code (2026-11-10, at `44f484f`)
+
+Platform reproduced three problems against Payload 3.92's real `login`. All are fixed, and Platform's repro tests are in the suite, adapted.
+
+1. **Blocker: Payload wrote old two-step state back over new.** `login` reads the account before its transaction, then `addSessionToUser` writes that whole stale copy back, so a sign-in that began earlier could turn two-step off again or bring a used code back, version included. **Decision 2 is replaced:** the state lives in the plugin's own `two-step-state` collection, one document per account (unique `user`, access false), which nothing in Payload's sign-in, refresh or logout touches. The version guard works as designed there.
+   - This **replaces "no migration"**. With `legacyUserField: 'twoStep'`, the plugin moves state kept on the account into its collection once at startup (copying only where the account has none yet), then removes it from the account. It refuses to start while the auth collection still declares that field.
+   - Tests: a sign-in begun before confirm doesn't turn two-step off; one recovery code signs in once when the second sign-in began first; the move runs once and two-step stays on.
+2. **Blocker: the built-in limiter could be outrun in parallel.** It now records the try first, then allows it only if it's among the window's first five (ordered by time then id, the same for every request), outside the request's transaction. Under a race some tries are refused that might have fitted, never the other way. Test: of 40 tries at once, at most 5 get through (it fails with the old count-then-record limiter).
+3. **Should: per-session records and `lastStep`** stopped being lost once the state moved; the refresh tests pass on the new collection.
+4. **Smaller: a remembered sign-in whose session record loses a race** now reads the state again and tries once more, and logs if that fails too.
+
+Found while doing this: **the key must come from the raw app secret** (`payload.config.secret`), as Captive Origins derives it. `payload.secret` is Payload's own hash of it and gives a different key, which would have left the site's stored authenticator secrets unreadable. The move test proves a secret sealed the site's way opens and signs in.

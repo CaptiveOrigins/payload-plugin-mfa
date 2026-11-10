@@ -2,12 +2,12 @@ import { createCipheriv, hkdfSync, randomBytes } from 'node:crypto'
 
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
-import { buildConfig, createLocalReq, getPayload, type Endpoint, type Payload, type PayloadRequest, type SanitizedConfig } from 'payload'
+import { BasePayload, buildConfig, createLocalReq, getPayload, type Endpoint, type Payload, type PayloadRequest, type SanitizedConfig } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOn, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, twoStep, TWO_STEP_TRUSTED, verify, type Limiter, type TwoStepEvent } from '../src/index.js'
-import { deriveKey, open } from '../src/crypto.js'
-import { optionsOf } from '../src/core.js'
+import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, twoStep, TWO_STEP_TRUSTED, verify, type Limiter, type TwoStepEvent } from '../src/index.js'
+import { deriveKey, open, seal } from '../src/crypto.js'
+import { allowed, optionsOf } from '../src/core.js'
 
 /** A made-up site: staff must use two-step, members may. Codes come from the secret `start` returns. */
 type U = { id: string; email: string; role: string; sessions?: { id: string }[] }
@@ -41,7 +41,12 @@ const enrol = async (u: U) => {
   const { recoveryCodes } = await confirm(payload, { userId: u.id, code: codeFor(key) })
   return { key, recoveryCodes }
 }
-const state = async (u: U) => ((await payload.findByID({ collection: 'users', id: u.id, overrideAccess: true, showHiddenFields: true, depth: 0 })) as unknown as { twoStep: Record<string, any>; sessions?: { id: string }[] })
+/** The account (for its sessions) and its two-step state document. */
+const state = async (u: U) => {
+  const account = (await payload.findByID({ collection: 'users', id: u.id, overrideAccess: true, showHiddenFields: true, depth: 0 })) as unknown as { sessions?: { id: string }[] }
+  const doc = (await payload.find({ collection: 'two-step-state' as never, where: { user: { equals: String(u.id) } }, limit: 1, overrideAccess: true })).docs[0] as unknown as Record<string, any>
+  return { sessions: account.sessions, twoStep: doc ?? {}, docId: doc?.id }
+}
 /** The next time step's code: accepted now (drift), and it moves `lastStep` past the current one. */
 const nextStepCode = (key: string) => codeFor(key, Date.now() + 30_000)
 
@@ -177,7 +182,7 @@ describe('sessions and remembered browsers', () => {
     await expect(refresh({ ...u, _sid: b })).rejects.toThrow()
     // Session A's code was given more than the window ago.
     const s = await state(u)
-    await payload.db.updateOne({ collection: 'users', id: u.id, data: { twoStep: { ...s.twoStep, sessions: { [a]: new Date(Date.now() - 23 * 3_600_000).toISOString() } } } })
+    await payload.db.updateOne({ collection: 'two-step-state', id: s.docId, data: { sessions: { [a]: new Date(Date.now() - 23 * 3_600_000).toISOString() } } })
     await expect(refresh({ ...u, _sid: a })).rejects.toThrow()
   })
 
@@ -231,6 +236,61 @@ describe('limits', () => {
   })
 })
 
+/** Holds Payload login's first read of the account (made before its transaction) until released. Platform's repro, adapted. */
+function holdLoginRead() {
+  let release!: () => void
+  const gate = new Promise<void>((r) => (release = r))
+  let readDone!: () => void
+  const read = new Promise<void>((r) => (readDone = r))
+  const original = payload.db.findOne.bind(payload.db)
+  let held = false
+  payload.db.findOne = (async (args: any) => {
+    const result = await original(args)
+    if (!held && args.collection === 'users' && !args.req?.transactionID) {
+      held = true
+      readDone()
+      await gate
+    }
+    return result
+  }) as typeof payload.db.findOne
+  return { read, release, restore: () => (payload.db.findOne = original as never) }
+}
+
+describe('races with Payload’s own sign-in', () => {
+  it('a sign-in that began before two-step was confirmed doesn’t turn it back off', async () => {
+    const u = await make()
+    const { key } = await start(payload, { userId: u.id })
+    const hold = holdLoginRead()
+    const pending = login(u).catch(() => undefined) // a second tab, or someone with the password
+    await hold.read
+    await confirm(payload, { userId: u.id, code: codeFor(key) })
+    hold.release()
+    await pending
+    hold.restore()
+    expect(await isOnFor(payload, u.id)).toBe(true)
+  })
+
+  it('one recovery code signs in once, even when the second sign-in began first', async () => {
+    const u = await make()
+    const { recoveryCodes } = await enrol(u)
+    const code = recoveryCodes[0]!
+    const hold = holdLoginRead()
+    const second = reason(login(u, { code }))
+    await hold.read
+    hold.restore()
+    const first = await reason(login(u, { code }))
+    hold.release()
+    expect([first, await second].sort()).toEqual(['signed in', 'wrong'])
+  })
+
+  it('the built-in limit lets at most five of forty tries at once through', async () => {
+    const u = await make()
+    const results = await Promise.all(Array.from({ length: 40 }, () => allowed(payload, 'code', u.id)))
+    expect(results.filter(Boolean).length).toBeLessThanOrEqual(5)
+    expect(results.filter(Boolean).length).toBeGreaterThan(0)
+  })
+})
+
 describe('changing the factor', () => {
   it('won’t move two-step to another app without a current app or recovery code, and an emailed code isn’t enough', async () => {
     const u = await make()
@@ -250,7 +310,7 @@ describe('changing the factor', () => {
     const u = await make()
     const { key } = await enrol(u)
     await turnOff(payload, { userId: u.id, code: nextStepCode(key) })
-    expect(isOn(payload, (await state(u)) as never)).toBe(false)
+    expect(await isOnFor(payload, u.id)).toBe(false)
     expect(await reason(login(u))).toBe('signed in')
   })
 })
@@ -283,6 +343,7 @@ describe('telling nothing, keeping nothing readable', () => {
     expect(text).not.toContain(recoveryCodes[0]!)
     const read = (await payload.findByID({ collection: 'users', id: u.id, overrideAccess: false, user: { ...u, collection: 'users' } as never })) as Record<string, unknown>
     expect(read.twoStep).toBeUndefined()
+    await expect(payload.find({ collection: 'two-step-state' as never, overrideAccess: false, user: { ...u, collection: 'users' } as never })).rejects.toThrow()
   })
 
   it('opens an app secret sealed the way Captive Origins seals them today, with its key settings', () => {
@@ -314,6 +375,30 @@ describe('the login endpoint', () => {
     const ok = await post({ email: u.email, password: PW, code: nextStepCode(key) })
     expect(ok.status).toBe(200)
     expect(ok.headers.getSetCookie().some((c) => c.startsWith('payload-two-step='))).toBe(true)
+  })
+})
+
+describe('moving state Captive Origins kept on the account', () => {
+  it('moves it once at startup, removes it from the account, and keeps two-step on', async () => {
+    const legacyCfg = (fields: any[] = []) =>
+      buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('legacy'), ensureIndexes: true }), collections: [{ slug: 'users', auth: true, fields }], plugins: [twoStep({ legacyUserField: 'twoStep', keyDerivation: { salt: 'captive-origins', info: 'two-step-secret' } })] })
+    await expect(legacyCfg([{ name: 'twoStep', type: 'group', fields: [{ name: 'secret', type: 'text' }] }])).rejects.toThrow(/remove the "twoStep" field/)
+    const first = await new BasePayload().init({ config: await legacyCfg() })
+    const u = (await first.create({ collection: 'users', data: { email: 'legacy@example.invalid', password: PW } as never })) as unknown as U
+    const secret = 'JBSWY3DPEHPK3PXP'
+    const sealed = seal(deriveKey(SECRET, 'captive-origins', 'two-step-secret'), secret)
+    // The account as Captive Origins stores it today: the group on the account, sealed with its key settings.
+    await (first.db as any).collections.users.collection.updateOne({ email: 'legacy@example.invalid' }, { $set: { twoStep: { secret: sealed, enabledAt: new Date().toISOString(), recovery: [] } } })
+    await first.destroy()
+    const second = await new BasePayload().init({ config: await legacyCfg() })
+    expect(await (second.db as any).collections.users.collection.countDocuments({ twoStep: { $exists: true } })).toBe(0)
+    const moved = (await second.find({ collection: 'two-step-state' as never, where: { user: { equals: String(u.id) } }, overrideAccess: true })).docs
+    expect(moved).toHaveLength(1)
+    expect(await isOnFor(second, u.id)).toBe(true)
+    const why = await signIn(second, { email: 'legacy@example.invalid', password: PW }).then(() => 'signed in', (e) => e.twoStep)
+    expect(why).toBe('needed')
+    expect(await signIn(second, { email: 'legacy@example.invalid', password: PW, code: codeFor(secret) }).then(() => 'signed in', (e) => e.twoStep)).toBe('signed in')
+    await second.destroy()
   })
 })
 

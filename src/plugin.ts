@@ -1,4 +1,4 @@
-import { AuthenticationError, Forbidden, generatePayloadCookie, type AuthStrategy, type CollectionAfterOperationHook, type CollectionBeforeLoginHook, type CollectionBeforeOperationHook, type CollectionConfig, type Config, type Endpoint, type Field, type Payload, type Plugin } from 'payload'
+import { AuthenticationError, Forbidden, generatePayloadCookie, type AuthStrategy, type CollectionAfterOperationHook, type CollectionBeforeLoginHook, type CollectionBeforeOperationHook, type CollectionConfig, type Config, type Endpoint, type Payload, type Plugin } from 'payload'
 
 import { afterPasswordSet, rememberValue } from './api.js'
 import {
@@ -9,12 +9,12 @@ import {
   isOnState,
   isRequired,
   keysOf,
+  loadState,
   optionsOf,
   REMEMBER_COOKIE,
   rememberedSince,
   saveIfUnchanged,
   sessionVerifiedAt,
-  stateOf,
   TWO_STEP_CODE,
   TWO_STEP_REMEMBER,
   TWO_STEP_TRUSTED,
@@ -34,14 +34,14 @@ export class TwoStepError extends AuthenticationError {
 const HOUR = 60 * 60_000
 const never = () => false
 
-function stateField(o: Resolved): Field {
+/** One document per account, written only by this plugin; nothing in Payload's sign-in touches it. */
+function stateCollection(o: Resolved): CollectionConfig {
   return {
-    name: o.field,
-    type: 'group',
-    // Only the plugin's own server code reads or writes it.
-    access: { read: never, create: never, update: never },
+    slug: o.stateSlug,
     admin: { hidden: true },
+    access: { read: never, create: never, update: never, delete: never },
     fields: [
+      { name: 'user', type: 'text', required: true, unique: true, index: true },
       { name: 'secret', type: 'text' },
       { name: 'pending', type: 'text' },
       { name: 'enabledAt', type: 'date' },
@@ -75,20 +75,25 @@ const newestSid = (user: TwoStepUser) => user.sessions?.at(-1)?.id
 
 const beforeLogin: CollectionBeforeLoginHook = async ({ req, user: u }) => {
   const payload = req.payload
-  const o = optionsOf(payload)
   const user = u as TwoStepUser
   if (req.context?.[TWO_STEP_TRUSTED] === true) return u
-  const state = stateOf(payload, user)
-  const on = isOnState(state)
-  if (!on) {
+  const loaded = await loadState(payload, user.id, req)
+  const state = loaded.state
+  if (!isOnState(state)) {
     if ((await isRequired(payload, user, req)) && !inEnrollWindow(state)) throw new TwoStepError(req.t, 'enroll')
     return u
   }
   const sid = newestSid(user)
   // A browser that gave a code recently: the session counts from when that code was given.
-  const since = rememberedSince(payload, user, req.context?.[TWO_STEP_REMEMBER])
+  const since = rememberedSince(payload, user, state, req.context?.[TWO_STEP_REMEMBER])
   if (since !== null) {
-    await saveIfUnchanged(payload, user, state, withSession(state, user, sid, new Date(since).toISOString()), req)
+    const at = new Date(since).toISOString()
+    if (!(await saveIfUnchanged(payload, user.id, loaded, withSession(state, user, sid, at), req))) {
+      // Someone else wrote the state at the same moment: read it again and try once more, or the session can't refresh.
+      const again = await loadState(payload, user.id, req)
+      if (!(await saveIfUnchanged(payload, user.id, again, withSession(again.state, user, sid, at), req)))
+        payload.logger.warn({ msg: 'two-step: a remembered sign-in’s session wasn’t recorded; it will need a code at its next refresh' })
+    }
     return u
   }
   const code = req.context?.[TWO_STEP_CODE]
@@ -101,9 +106,9 @@ const beforeLogin: CollectionBeforeLoginHook = async ({ req, user: u }) => {
   const accepted = acceptCode(keysOf(payload), state, code)
   if (!accepted) throw new TwoStepError(req.t, 'wrong')
   const next = withSession(accepted.next, user, sid, new Date().toISOString())
-  if (!(await saveIfUnchanged(payload, user, state, next, req))) throw new TwoStepError(req.t, 'wrong')
+  if (!(await saveIfUnchanged(payload, user.id, loaded, next, req))) throw new TwoStepError(req.t, 'wrong')
   if (accepted.used === 'recovery') await emit(payload, { type: 'recovery-used', user: String(user.id), req, detail: { left: next.recovery?.length ?? 0 } })
-  return { ...u, [o.field]: next }
+  return u
 }
 
 /** A session can't outlive the remembered window, and an account that must have two-step but doesn't can't refresh. */
@@ -112,11 +117,9 @@ const beforeOperation: CollectionBeforeOperationHook = async ({ operation, req }
   const payload = req.payload
   const o = optionsOf(payload)
   const user = req.user as unknown as TwoStepUser
-  const full = (await payload.findByID({ collection: o.users as never, id: user.id, depth: 0, overrideAccess: true, showHiddenFields: true, disableErrors: true, req })) as unknown as TwoStepUser | null
-  if (!full) throw new Forbidden(req.t)
-  const state = stateOf(payload, full)
+  const { state } = await loadState(payload, user.id, req)
   if (!isOnState(state)) {
-    if ((await isRequired(payload, full, req)) && !inEnrollWindow(state)) throw new Forbidden(req.t)
+    if ((await isRequired(payload, user, req)) && !inEnrollWindow(state)) throw new Forbidden(req.t)
     return
   }
   const verified = sessionVerifiedAt(state, user._sid)
@@ -132,7 +135,7 @@ const afterOperation: CollectionAfterOperationHook = async ({ operation, req, re
   return result
 }
 
-/** Signs out, on its next request, a session whose account must now have two-step and doesn't. */
+/** Signs out, on its next request, a session whose account must now have two-step and doesn't. Only with a rule. */
 function wrapStrategies(payload: Payload, o: Resolved) {
   payload.authStrategies = payload.authStrategies.map(
     (strategy): AuthStrategy => ({
@@ -140,16 +143,37 @@ function wrapStrategies(payload: Payload, o: Resolved) {
       authenticate: async (args) => {
         const result = await strategy.authenticate(args)
         const user = result.user as TwoStepUser | null
-        // Only when the site has a rule: otherwise nothing here can change the answer.
         if (!user || user.collection !== o.users || !o.requiredFor) return result
-        const full = (await payload.findByID({ collection: o.users as never, id: user.id, depth: 0, overrideAccess: true, showHiddenFields: true, disableErrors: true })) as unknown as TwoStepUser | null
-        if (!full) return { ...result, user: null }
-        const state = stateOf(payload, full)
-        if (!isOnState(state) && (await isRequired(payload, full)) && !inEnrollWindow(state)) return { ...result, user: null }
+        const { state } = await loadState(payload, user.id)
+        if (!isOnState(state) && (await isRequired(payload, user)) && !inEnrollWindow(state)) return { ...result, user: null }
         return result
       },
     }),
   )
+}
+
+/**
+ * Moves state Captive Origins kept on the account (`legacyUserField`) into the plugin's collection, once: for each
+ * account that has old state and no new state, copy it, then remove it from the account. Any failure stops startup.
+ */
+async function moveLegacyState(payload: Payload, o: Resolved) {
+  const field = o.legacyUserField!
+  const users = (payload.db as unknown as { collections?: Record<string, { collection: { find: (q: object, opts?: object) => { toArray: () => Promise<Record<string, unknown>[]> }; updateOne: (q: object, u: object) => Promise<unknown> } }> }).collections?.[o.users]
+  if (!users) throw new Error('two-step: `legacyUserField` needs the MongoDB adapter.')
+  const old = await users.collection.find({ [field]: { $exists: true, $ne: null } }, { projection: { _id: 1, [field]: 1 } }).toArray()
+  let moved = 0
+  for (const row of old) {
+    const id = String(row._id)
+    const legacy = (row[field] ?? {}) as Record<string, unknown>
+    const existing = await loadState(payload, id)
+    if (existing.docId === null && legacy.secret) {
+      const ok = await saveIfUnchanged(payload, id, existing, { ...(legacy as object), sessions: {}, version: 0 })
+      if (!ok) throw new Error(`two-step: couldn’t move the old two-step state of account ${id}; nothing was removed from it.`)
+      moved++
+    }
+    await users.collection.updateOne({ _id: row._id }, { $unset: { [field]: '' } })
+  }
+  if (old.length) payload.logger.info({ msg: `two-step: moved the old state of ${moved} account(s) into ${o.stateSlug}; cleared ${old.length}.` })
 }
 
 function loginEndpoint(o: Resolved): Endpoint {
@@ -194,7 +218,6 @@ export const twoStep =
   (config: Config): Config => {
     const o: Resolved = {
       users: options.users ?? 'users',
-      field: options.field ?? 'twoStep',
       issuer: options.issuer ?? 'Payload',
       rememberHours: options.rememberHours ?? 24,
       emailBlockHours: options.emailBlockHours ?? 24,
@@ -205,18 +228,22 @@ export const twoStep =
       clientAddress: options.clientAddress,
       sendEmailCode: options.sendEmailCode,
       onEvent: options.onEvent,
+      legacyUserField: options.legacyUserField,
       keyDerivation: { salt: options.keyDerivation?.salt ?? 'payload-plugin-two-step', info: options.keyDerivation?.info ?? 'two-step-secret' },
       limits: { code: options.limits?.code ?? 5, emailCode: options.limits?.emailCode ?? 3, windowMinutes: options.limits?.windowMinutes ?? 15 },
       attempts: 'two-step-attempts',
+      stateSlug: 'two-step-state',
     }
     if (!config.secret || config.secret.length < 32) throw new Error('two-step: the app secret must be at least 32 characters (it seals the authenticator secrets).')
     const users = (config.collections ?? []).find((c) => c.slug === o.users)
     if (!users?.auth) throw new Error(`two-step: no auth collection "${o.users}".`)
     if (typeof users.auth === 'object' && users.auth.useAPIKey)
       throw new Error('two-step: API keys sign in without a password or code, which would skip two-step. Turn off `auth.useAPIKey` on this collection, or put API keys on a separate collection.')
-    if ((config.collections ?? []).some((c) => c.slug === o.attempts)) throw new Error(`two-step: a collection "${o.attempts}" already exists.`)
+    for (const slug of [o.attempts, o.stateSlug]) if ((config.collections ?? []).some((c) => c.slug === slug)) throw new Error(`two-step: a collection "${slug}" already exists.`)
     if (o.rememberHours * 3600 <= ((typeof users.auth === 'object' && users.auth.tokenExpiration) || 7200))
       throw new Error('two-step: `rememberHours` must be longer than the collection’s `auth.tokenExpiration`.')
+    if (o.legacyUserField && users.fields.some((f) => 'name' in f && f.name === o.legacyUserField))
+      throw new Error(`two-step: remove the "${o.legacyUserField}" field from "${o.users}": Payload's sign-in would keep writing it. The plugin moves its data at startup.`)
 
     const onInit = config.onInit
     return {
@@ -227,7 +254,6 @@ export const twoStep =
             ? c
             : {
                 ...c,
-                fields: [...c.fields, stateField(o)],
                 hooks: {
                   ...c.hooks,
                   beforeLogin: [...(c.hooks?.beforeLogin ?? []), beforeLogin],
@@ -237,11 +263,13 @@ export const twoStep =
                 endpoints: [...(c.endpoints || []), ...(o.endpoint ? [loginEndpoint(o)] : [])],
               },
         ),
+        stateCollection(o),
         attemptsCollection(o),
       ],
       custom: { ...config.custom, twoStep: o },
       onInit: async (payload) => {
         await onInit?.(payload)
+        if (o.legacyUserField) await moveLegacyState(payload, o)
         wrapStrategies(payload, o)
       },
     }

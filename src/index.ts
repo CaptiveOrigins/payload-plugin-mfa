@@ -1,5 +1,5 @@
 export { twoStep, TwoStepError } from './plugin.js'
-export { afterPasswordSet, allowEnrollment, confirm, isOn, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, TwoStepRefused, verify } from './api.js'
+export { afterPasswordSet, allowEnrollment, confirm, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, TwoStepRefused, verify } from './api.js'
 export { REMEMBER_COOKIE, TWO_STEP_CODE, TWO_STEP_REMEMBER, TWO_STEP_TRUSTED } from './core.js'
 export { codeFor } from './crypto.js'
 export type { Limiter, LimitKind, TwoStepEvent, TwoStepOptions, TwoStepState, TwoStepUser } from './types.js'

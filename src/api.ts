@@ -9,11 +9,11 @@ import {
   emit,
   isOnState,
   keysOf,
+  loadState,
   loadUser,
   optionsOf,
   rememberValueFor,
   saveIfUnchanged,
-  stateOf,
   TWO_STEP_CODE,
   TWO_STEP_REMEMBER,
   withSession,
@@ -40,16 +40,13 @@ const refuse = (reason: TwoStepRefused['reason'], message: string): never => {
 async function load(payload: Payload, userId: string | number, req?: PayloadRequest) {
   const user = await loadUser(payload, userId, req)
   if (!user) refuse('notFound', 'That account wasn’t found.')
-  return { user: user!, state: stateOf(payload, user) }
+  const loaded = await loadState(payload, user!.id, req)
+  return { user: user!, loaded, state: loaded.state }
 }
 
-/** Whether this account has two-step on. For step-up checks: `stepUp.available` in Hats. */
-export const isOn = (payload: Payload, user: Record<string, unknown> | null | undefined) => isOnState(stateOf(payload, user))
-
-/** Whether an account (by id) has two-step on, looking up its hidden state. */
+/** Whether an account has two-step on. For step-up checks: `stepUp.available` in Hats. */
 export async function isOnFor(payload: Payload, userId: string | number, req?: PayloadRequest) {
-  const user = await loadUser(payload, userId, req)
-  return Boolean(user && isOnState(stateOf(payload, user)))
+  return isOnState((await loadState(payload, userId, req)).state)
 }
 
 /**
@@ -57,20 +54,21 @@ export async function isOnFor(payload: Payload, userId: string | number, req?: P
  * per account, each code used once, safe under concurrency. Records the code against the request's session.
  */
 export async function verify(payload: Payload, args: { user: { id: string | number } & Record<string, unknown>; code: unknown; req?: PayloadRequest }): Promise<boolean> {
-  const loaded = await loadUser(payload, args.user.id, args.req)
-  if (!loaded) return false
-  const state = stateOf(payload, loaded)
+  const user = await loadUser(payload, args.user.id, args.req)
+  if (!user) return false
+  const loaded = await loadState(payload, user.id, args.req)
+  const state = loaded.state
   if (!isOnState(state)) return false
-  if (!(await allowed(payload, 'code', loaded.id, args.req))) {
-    await emit(payload, { type: 'too-many-tries', user: String(loaded.id), req: args.req })
+  if (!(await allowed(payload, 'code', user.id, args.req))) {
+    await emit(payload, { type: 'too-many-tries', user: String(user.id), req: args.req })
     return false
   }
   const accepted = acceptCode(keysOf(payload), state, args.code)
   if (!accepted) return false
   const sid = (args.req?.user as { _sid?: string } | null | undefined)?._sid
-  const next = withSession(accepted.next, loaded, sid, new Date().toISOString())
-  if (!(await saveIfUnchanged(payload, loaded, state, next, args.req))) return false
-  if (accepted.used === 'recovery') await emit(payload, { type: 'recovery-used', user: String(loaded.id), req: args.req, detail: { left: next.recovery?.length ?? 0 } })
+  const next = withSession(accepted.next, user, sid, new Date().toISOString())
+  if (!(await saveIfUnchanged(payload, user.id, loaded, next, args.req))) return false
+  if (accepted.used === 'recovery') await emit(payload, { type: 'recovery-used', user: String(user.id), req: args.req, detail: { left: next.recovery?.length ?? 0 } })
   return true
 }
 
@@ -87,7 +85,7 @@ export async function signIn(payload: Payload, args: { email: string; password: 
 /** The remember cookie's value for an account that has just given a code. The site sets the cookie (HttpOnly). */
 export async function rememberValue(payload: Payload, args: { userId: string | number; req?: PayloadRequest }) {
   const user = await loadUser(payload, args.userId, args.req)
-  return user ? rememberValueFor(payload, user) : ''
+  return user ? rememberValueFor(payload, user, (await loadState(payload, user.id, args.req)).state) : ''
 }
 
 /**
@@ -96,7 +94,7 @@ export async function rememberValue(payload: Payload, args: { userId: string | n
  */
 export async function start(payload: Payload, args: { userId: string | number; code?: unknown; req?: PayloadRequest }): Promise<{ uri: string; key: string }> {
   const o = optionsOf(payload)
-  const { user, state } = await load(payload, args.userId, args.req)
+  const { user, loaded, state } = await load(payload, args.userId, args.req)
   let base: TwoStepState = state
   if (isOnState(state)) {
     if (typeof args.code !== 'string' || !args.code.trim()) refuse('needsCode', 'Enter a code from your current app, or a recovery code, to set up a new one.')
@@ -106,14 +104,14 @@ export async function start(payload: Payload, args: { userId: string | number; c
     base = accepted!.next
   }
   const secret = newSecret()
-  if (!(await saveIfUnchanged(payload, user, state, { ...base, pending: seal(keysOf(payload), secret) }, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
+  if (!(await saveIfUnchanged(payload, user.id, loaded, { ...base, pending: seal(keysOf(payload), secret) }, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'started', user: String(user.id), req: args.req })
   return { uri: appLink(secret, o.issuer, String(user.email ?? user.id)), key: secret }
 }
 
 /** The first code from the app proves it works: two-step goes on, and the recovery codes are returned once. */
 export async function confirm(payload: Payload, args: { userId: string | number; code: unknown; req?: PayloadRequest }): Promise<{ recoveryCodes: string[] }> {
-  const { user, state } = await load(payload, args.userId, args.req)
+  const { user, loaded, state } = await load(payload, args.userId, args.req)
   if (!state.pending) refuse('noPending', 'Start again: there’s no app waiting to be confirmed.')
   if (!(await allowed(payload, 'code', user.id, args.req))) refuse('tooMany', 'Too many tries. Please wait a few minutes.')
   const step = acceptPending(keysOf(payload), state, args.code)
@@ -127,34 +125,34 @@ export async function confirm(payload: Payload, args: { userId: string | number;
     sid,
     now,
   )
-  if (!(await saveIfUnchanged(payload, user, state, next, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
+  if (!(await saveIfUnchanged(payload, user.id, loaded, next, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'confirmed', user: String(user.id), req: args.req })
   return { recoveryCodes: codes }
 }
 
 async function withCode(payload: Payload, args: { userId: string | number; code: unknown; req?: PayloadRequest }) {
-  const { user, state } = await load(payload, args.userId, args.req)
+  const { user, loaded, state } = await load(payload, args.userId, args.req)
   if (!isOnState(state)) refuse('notOn', 'Two-step isn’t on for this account.')
   if (!(await allowed(payload, 'code', user.id, args.req))) refuse('tooMany', 'Too many tries. Please wait a few minutes.')
   const accepted = acceptCode(keysOf(payload), state, args.code)
   // Changing the factor itself needs the app or a recovery code: an emailed code only proves the mailbox.
   if (!accepted || accepted.used === 'email') refuse('wrongCode', 'Enter a code from your app, or a recovery code.')
-  return { user, state, accepted: accepted! }
+  return { user, loaded, state, accepted: accepted! }
 }
 
 /** Turns two-step off. The site checks the password first; a current code (or recovery code) is needed too. */
 export async function turnOff(payload: Payload, args: { userId: string | number; code: unknown; req?: PayloadRequest }) {
-  const { user, state } = await withCode(payload, args)
+  const { user, loaded, state } = await withCode(payload, args)
   const cleared: TwoStepState = { secret: null, pending: null, enabledAt: null, lastStep: null, recovery: [], verifiedAt: null, sessions: {}, emailCode: null, emailCodeExpires: null, emailBlockedUntil: state.emailBlockedUntil ?? null, enrollUntil: null }
-  if (!(await saveIfUnchanged(payload, user, state, cleared, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
+  if (!(await saveIfUnchanged(payload, user.id, loaded, cleared, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'turned-off', user: String(user.id), req: args.req })
 }
 
 /** New recovery codes, returned once; the old ones stop working. The site checks the password first; a current code is needed too. */
 export async function newRecoveryCodesFor(payload: Payload, args: { userId: string | number; code: unknown; req?: PayloadRequest }): Promise<{ recoveryCodes: string[] }> {
-  const { user, state, accepted } = await withCode(payload, args)
+  const { user, loaded, accepted } = await withCode(payload, args)
   const { codes, hashes } = newRecoveryCodes()
-  if (!(await saveIfUnchanged(payload, user, state, { ...accepted.next, recovery: hashes }, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
+  if (!(await saveIfUnchanged(payload, user.id, loaded, { ...accepted.next, recovery: hashes }, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'recovery-renewed', user: String(user.id), req: args.req })
   return { recoveryCodes: codes }
 }
@@ -170,11 +168,12 @@ export async function sendEmailCode(payload: Payload, args: { email: string; req
   if (!email) return
   const found = (await payload.find({ collection: o.users as never, where: { email: { equals: email } }, limit: 1, depth: 0, overrideAccess: true, showHiddenFields: true, ...(args.req ? { req: args.req } : {}) })).docs[0] as unknown as TwoStepUser | undefined
   if (!found) return
-  const state = stateOf(payload, found)
+  const loaded = await loadState(payload, found.id, args.req)
+  const state = loaded.state
   if (!isOnState(state) || emailBlocked(state)) return
   if (!(await allowed(payload, 'emailCode', found.id, args.req))) return
   const code = newEmailCode()
-  const saved = await saveIfUnchanged(payload, found, state, { ...state, emailCode: emailCodeHash(keysOf(payload), code), emailCodeExpires: new Date(Date.now() + o.emailCodeMinutes * 60_000).toISOString() }, args.req)
+  const saved = await saveIfUnchanged(payload, found.id, loaded, { ...state, emailCode: emailCodeHash(keysOf(payload), code), emailCodeExpires: new Date(Date.now() + o.emailCodeMinutes * 60_000).toISOString() }, args.req)
   if (!saved) return
   const send = o.sendEmailCode ?? (({ payload: p, to, code: c, minutes }) => p.sendEmail({ to, subject: 'Your sign-in code', text: `Your sign-in code is ${c}. It works once, for ${minutes} minutes.\n\nIf you didn't try to sign in, someone may know your password: change it.` }))
   try {
@@ -187,9 +186,9 @@ export async function sendEmailCode(payload: Payload, args: { email: string; req
 
 /** Lets an account that must have two-step sign in to set it up, for a while (staff, for one person). Ends at the first confirm. */
 export async function allowEnrollment(payload: Payload, args: { userId: string | number; hours?: number; req?: PayloadRequest }) {
-  const { user, state } = await load(payload, args.userId, args.req)
+  const { user, loaded, state } = await load(payload, args.userId, args.req)
   const until = new Date(Date.now() + (args.hours ?? 24) * HOUR).toISOString()
-  if (!(await saveIfUnchanged(payload, user, state, { ...state, enrollUntil: until }, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
+  if (!(await saveIfUnchanged(payload, user.id, loaded, { ...state, enrollUntil: until }, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'enrollment-window', user: String(user.id), req: args.req, detail: { hours: args.hours ?? 24 } })
 }
 
@@ -200,12 +199,11 @@ export async function allowEnrollment(payload: Payload, args: { userId: string |
 export async function afterPasswordSet(payload: Payload, args: { userId: string | number; req?: PayloadRequest }) {
   const o = optionsOf(payload)
   for (let i = 0; i < 3; i++) {
-    const user = await loadUser(payload, args.userId, args.req)
-    if (!user) return
-    const state = stateOf(payload, user)
+    const loaded = await loadState(payload, args.userId, args.req)
+    const state = loaded.state
     const next = { ...state, emailCode: null, emailCodeExpires: null, emailBlockedUntil: new Date(Date.now() + o.emailBlockHours * HOUR).toISOString() }
-    if (await saveIfUnchanged(payload, user, state, next, args.req)) {
-      await emit(payload, { type: 'email-codes-blocked', user: String(user.id), req: args.req, detail: { hours: o.emailBlockHours } })
+    if (await saveIfUnchanged(payload, args.userId, loaded, next, args.req)) {
+      await emit(payload, { type: 'email-codes-blocked', user: String(args.userId), req: args.req, detail: { hours: o.emailBlockHours } })
       return
     }
   }

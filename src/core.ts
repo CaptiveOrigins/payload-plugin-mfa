@@ -26,13 +26,30 @@ export const keysOf = (payload: Payload): Keys => {
   let k = keyCache.get(payload)
   if (!k) {
     const o = optionsOf(payload)
-    k = deriveKey(payload.secret, o.keyDerivation.salt, o.keyDerivation.info)
+    // The raw app secret, as Captive Origins derives it: `payload.secret` is Payload's own hash of it, which would give another key.
+    k = deriveKey(payload.config.secret, o.keyDerivation.salt, o.keyDerivation.info)
     keyCache.set(payload, k)
   }
   return k
 }
 
-export const stateOf = (payload: Payload, user: Record<string, unknown> | null | undefined): TwoStepState => ((user?.[optionsOf(payload).field] as TwoStepState | null | undefined) ?? {}) as TwoStepState
+/**
+ * An account's two-step state lives in its own collection, one document per account, never on the account: Payload's
+ * sign-in reads the account before its transaction and writes that whole copy back when it adds a session, which
+ * would put old two-step state back over new. Here, only this plugin writes.
+ */
+export type Loaded = { docId: string | number | null; state: TwoStepState }
+
+const STATE_FIELDS = ['secret', 'pending', 'enabledAt', 'lastStep', 'recovery', 'verifiedAt', 'sessions', 'emailCode', 'emailCodeExpires', 'emailBlockedUntil', 'enrollUntil', 'version'] as const
+
+export async function loadState(payload: Payload, userId: string | number, req?: PayloadRequest): Promise<Loaded> {
+  const o = optionsOf(payload)
+  const doc = (await payload.find({ collection: o.stateSlug as never, where: { user: { equals: String(userId) } }, limit: 1, depth: 0, overrideAccess: true, pagination: false, ...(req ? { req } : {}) })).docs[0] as Record<string, unknown> | undefined
+  if (!doc) return { docId: null, state: {} }
+  const state: TwoStepState = {}
+  for (const k of STATE_FIELDS) (state as Record<string, unknown>)[k] = doc[k] ?? null
+  return { docId: doc.id as string, state }
+}
 
 /** On whenever there's a secret: it's only ever set with `enabledAt`, and turning off clears it. Anything odd counts as on. */
 export const isOnState = (s: TwoStepState) => Boolean(s.secret)
@@ -52,29 +69,47 @@ export async function loadUser(payload: Payload, id: string | number, req?: Payl
  * false when another request got there first: the caller treats its code as wrong. These writes go straight to
  * the database, so they skip collection hooks (audit hooks included); `onEvent` is the record.
  */
-export async function saveIfUnchanged(payload: Payload, user: TwoStepUser, before: TwoStepState, next: TwoStepState, req?: PayloadRequest): Promise<boolean> {
+export async function saveIfUnchanged(payload: Payload, userId: string | number, loaded: Loaded, next: TwoStepState, req?: PayloadRequest): Promise<boolean> {
   const o = optionsOf(payload)
-  const version = before.version ?? 0
-  const where = {
-    and: [{ id: { equals: user.id } }, version ? { [`${o.field}.version`]: { equals: version } } : { or: [{ [`${o.field}.version`]: { exists: false } }, { [`${o.field}.version`]: { equals: null } }, { [`${o.field}.version`]: { equals: 0 } }] }],
+  const version = loaded.state.version ?? 0
+  const data: Record<string, unknown> = {}
+  for (const k of STATE_FIELDS) if (k !== 'version') data[k] = (next as Record<string, unknown>)[k] ?? null
+  data.version = version + 1
+  try {
+    if (loaded.docId === null) {
+      // The first state for this account; a unique index on `user` stops two being made at once.
+      await payload.db.create({ collection: o.stateSlug, data: { ...data, user: String(userId) }, ...(req ? { req } : {}) })
+      return true
+    }
+    const done = await payload.db.updateOne({ collection: o.stateSlug, where: { and: [{ id: { equals: loaded.docId } }, { version: { equals: version } }] } as never, data, ...(req ? { req } : {}) })
+    return Boolean(done)
+  } catch (error) {
+    // A duplicate first state, or a write conflict inside a transaction: someone else got there first.
+    payload.logger.warn({ err: error, msg: 'two-step: a state write lost a race, so it was refused' })
+    return false
   }
-  const done = await payload.db.updateOne({ collection: o.users, where: where as never, data: { [o.field]: { ...next, version: version + 1 } }, ...(req ? { req } : {}) })
-  return Boolean(done)
 }
 
 // ------------------------------------------------------------------------------------------------
 // The limiter: per account always (never including the address, so changing address gives no new tries),
 // plus per address on top when the site gives `clientAddress`. Keys are built here, never passed in.
 
+/**
+ * Records the try first, then counts the window including it, so tries arriving together can't all see room:
+ * under a race some are refused that might have fitted (fails closed), never the other way. Written outside the
+ * request's transaction, so a refused sign-in rolling back doesn't erase its try.
+ */
 async function builtIn(payload: Payload, kind: LimitKind, key: string): Promise<boolean> {
   const o = optionsOf(payload)
   const max = kind.startsWith('emailCode') ? o.limits.emailCode : o.limits.code
   const keyHash = createHash('sha256').update(`${payload.secret}|two-step|${kind}|${key}`).digest('hex')
-  const since = new Date(Date.now() - o.limits.windowMinutes * 60_000).toISOString()
-  const { totalDocs } = await payload.count({ collection: o.attempts as never, where: { and: [{ keyHash: { equals: keyHash } }, { at: { greater_than: since } }] } as never, overrideAccess: true })
-  if (totalDocs >= max) return false
-  await payload.create({ collection: o.attempts as never, data: { keyHash, at: new Date().toISOString() } as never, overrideAccess: true })
-  return true
+  const now = Date.now()
+  const at = new Date(now).toISOString()
+  const mine = (await payload.create({ collection: o.attempts as never, data: { keyHash, at } as never, overrideAccess: true })) as unknown as { id: string | number }
+  const since = new Date(now - o.limits.windowMinutes * 60_000).toISOString()
+  // Allowed only if this try is among the window's first `max`, ordered by time then id, the same for every request.
+  const { docs } = await payload.find({ collection: o.attempts as never, where: { and: [{ keyHash: { equals: keyHash } }, { at: { greater_than: since } }] } as never, sort: ['at', 'id'], limit: max, depth: 0, overrideAccess: true, pagination: false })
+  return (docs as unknown as { id: string | number }[]).some((d) => String(d.id) === String(mine.id))
 }
 
 /** True to allow. Refuses on any error (fails closed). */
@@ -141,21 +176,21 @@ export const emailBlocked = (s: TwoStepState, now = Date.now()) => Boolean(s.ema
 
 const rememberMac = (keys: Keys, user: TwoStepUser, state: TwoStepState, expires: number) => mac(keys, `remember|${String(user.id)}|${expires}|${state.secret ?? ''}|${String(user.hash ?? '')}`)
 
-export function rememberValueFor(payload: Payload, user: TwoStepUser, now = Date.now()): string {
+export function rememberValueFor(payload: Payload, user: TwoStepUser, state: TwoStepState, now = Date.now()): string {
   const o = optionsOf(payload)
   const expires = now + o.rememberHours * HOUR
-  return `${expires}.${rememberMac(keysOf(payload), user, stateOf(payload, user), expires)}`
+  return `${expires}.${rememberMac(keysOf(payload), user, state, expires)}`
 }
 
 /** The moment the code behind a remembered browser was given, or null when the value isn't valid now. */
-export function rememberedSince(payload: Payload, user: TwoStepUser, value: unknown, now = Date.now()): number | null {
+export function rememberedSince(payload: Payload, user: TwoStepUser, state: TwoStepState, value: unknown, now = Date.now()): number | null {
   if (typeof value !== 'string') return null
   const o = optionsOf(payload)
   const [expires, given] = value.split('.')
   const until = Number(expires)
   const span = o.rememberHours * HOUR
   if (!given || !Number.isFinite(until) || until <= now || until > now + span) return null
-  return same(given, rememberMac(keysOf(payload), user, stateOf(payload, user), until)) ? until - span : null
+  return same(given, rememberMac(keysOf(payload), user, state, until)) ? until - span : null
 }
 
 /** Keeps the per-session record small: only sessions the account still has. */

@@ -25,5 +25,9 @@ Each promise in the README and ADR 0001, and the test that proves it (`test/two-
 | Secrets sealed by Captive Origins today open | "opens an app secret sealed the way…" |
 | Endpoint: unknown email like a wrong password; needs a code; sets cookies | "answers an unknown email like a wrong password…" |
 | Startup refusals (short secret, no auth collection, API keys) | "with a short app secret…" |
+| A sign-in begun earlier can't turn two-step off | "a sign-in that began before two-step was confirmed…" (Platform's repro) |
+| A recovery code signs in once against an earlier-begun sign-in | "one recovery code signs in once…" (Platform's repro) |
+| The limiter holds under 40 tries at once | "the built-in limit lets at most five…" (fails with count-then-record) |
+| Old state moves once from the account and signs in | "moves it once at startup…" (also proves the raw-secret key) |
 
 Gaps, skipped with reason: the built-in limiter's window rollover (simple count-since-time code, covered by the per-account test's refusal); `rememberHours` versus `tokenExpiration` at startup (a config check, low risk). Bigger: a test against a real browser flow belongs to the site's wiring.

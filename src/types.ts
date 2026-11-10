@@ -1,9 +1,6 @@
 import type { Payload, PayloadRequest } from 'payload'
 
-/**
- * What the plugin keeps on each account, in a hidden group (default `twoStep`). Field names match the shape
- * Captive Origins already stores, so a site moving to the plugin needs no migration.
- */
+/** What the plugin keeps for each account, in its own `two-step-state` collection (one document per account). */
 export type TwoStepState = {
   /** The app secret, sealed (AES-256-GCM). */
   secret?: string | null
@@ -46,8 +43,12 @@ export type Limiter = (args: { kind: LimitKind; key: string; req?: PayloadReques
 export type TwoStepOptions = {
   /** The auth collection. Default `users`. */
   users?: string
-  /** The hidden group's name on it. Default `twoStep`. */
-  field?: string
+  /**
+   * Captive Origins kept this state in a group on the account (default name `twoStep`). Name it here to move it,
+   * once, into the plugin's own collection when the site starts: each account's old state is copied (where the account
+   * has none yet) and removed from the account. The group must no longer be declared on the auth collection.
+   */
+  legacyUserField?: string
   /** Who must have two-step to sign in. Throwing counts as required. Default: nobody. */
   requiredFor?: (args: { user: TwoStepUser; req?: PayloadRequest }) => boolean | Promise<boolean>
   /** The name the authenticator app shows. Default `Payload`. */
@@ -74,8 +75,9 @@ export type TwoStepOptions = {
   endpoint?: boolean
 }
 
-export type Resolved = Required<Pick<TwoStepOptions, 'users' | 'field' | 'issuer' | 'rememberHours' | 'emailBlockHours' | 'emailCodeMinutes' | 'endpoint'>> &
-  Pick<TwoStepOptions, 'requiredFor' | 'limit' | 'clientAddress' | 'sendEmailCode' | 'onEvent'> & {
+export type Resolved = Required<Pick<TwoStepOptions, 'users' | 'issuer' | 'rememberHours' | 'emailBlockHours' | 'emailCodeMinutes' | 'endpoint'>> &
+  Pick<TwoStepOptions, 'requiredFor' | 'limit' | 'clientAddress' | 'sendEmailCode' | 'onEvent' | 'legacyUserField'> & {
+    stateSlug: string
     keyDerivation: { salt: string; info: string }
     limits: { code: number; emailCode: number; windowMinutes: number }
     attempts: string

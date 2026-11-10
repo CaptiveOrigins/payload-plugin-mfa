@@ -2,7 +2,7 @@
 
 Two-step sign-in for Payload: an authenticator code after the password, with emailed and recovery codes as backups, each used once, limited per account, and required by a rule you set.
 
-**Status:** early, 0.1.0, not on npm yet. 19 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, races, the limits, remembered browsers, per-session expiry, the required rule and the login endpoint. It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
+**Status:** early, 0.1.0, not on npm yet. 23 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
 
 ## What it does
 
@@ -12,7 +12,7 @@ Two-step sign-in for Payload: an authenticator code after the password, with ema
 - **Required by your rule.** `requiredFor` decides who must have it. It's checked at sign-in, on every refresh, and on every request for open sessions, and if it throws the account counts as required. A required account that hasn't enrolled can't sign in, so a stolen password can't enrol its own phone. Staff can open a short window with `allowEnrollment`.
 - **Remembered browsers.** After a code, the site can set a cookie so the password alone works for 24 hours. A new password or a new app ends it. A session can't outlive the code it came from, counted per session, so one device's code never extends another.
 - **After a password reset,** emailed codes are off for 24 hours, since the mailbox has just proved itself. The plugin does this by itself after Payload's `resetPassword`.
-- **Nothing readable.** The secret is sealed with AES-256-GCM, using a key derived from your app secret. Codes are stored hashed. The state is hidden from every API read.
+- **Nothing readable.** The secret is sealed with AES-256-GCM, using a key derived from your app secret. Codes are stored hashed. The state lives in its own `two-step-state` collection (one document per account), hidden from every API read and never written by Payload's sign-in.
 
 ## Install
 
@@ -45,6 +45,10 @@ HTTP can't carry the code: it travels in `req.context`, which only your server c
 - **Step-up** before a sensitive action: `verify(payload, { user, code, req })`. For Hats: `stepUp: { available: (u) => isOnFor(payload, u.id), verify: ({ user, code, req }) => verify(payload, { user, code, req }) }`.
 - **Your own vouching:** pass `context: { [TWO_STEP_TRUSTED]: true }` to `payload.login` only from server code that has checked the person another way, or that throws the token away (for example, checking a password).
 - **Invitations:** after a password set through an emailed link, call `afterPasswordSet(payload, { userId })`.
+
+## Moving from state kept on the account
+
+If your site kept two-step state in a group on the account (Captive Origins did, as `twoStep`), remove that field from the auth collection and pass `legacyUserField: 'twoStep'` (plus the `keyDerivation` values you used). At startup the plugin copies each account's old state into its collection, where it has none yet, then removes it from the account. MongoDB only. Back up first; on Captive Origins, this needs the owner's yes before it runs on prod.
 
 ## Limits
 
