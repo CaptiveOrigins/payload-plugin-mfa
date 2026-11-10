@@ -3,21 +3,21 @@ import { createHash } from 'node:crypto'
 import type { Payload, PayloadRequest } from 'payload'
 
 import { appCodeStep, deriveKey, emailCodeHash, hashRecovery, mac, open, same, type Keys } from './crypto.js'
-import type { LimitKind, Resolved, TwoStepEvent, TwoStepState, TwoStepUser } from './types.js'
+import type { LimitKind, Resolved, MfaEvent, MfaState, MfaUser } from './types.js'
 
 /** Server-only `req.context` keys. HTTP requests can't set context, so only the site's own code can. */
-export const TWO_STEP_CODE = 'twoStepCode'
+export const MFA_CODE = 'mfaCode'
 /** The remember cookie's value, as the site read it from the browser. */
-export const TWO_STEP_REMEMBER = 'twoStepRemember'
+export const MFA_REMEMBER = 'mfaRemember'
 /** The site's own code vouches for this sign-in (or throws its token away), e.g. checking a password. */
-export const TWO_STEP_TRUSTED = 'twoStepTrusted'
-export const REMEMBER_COOKIE = 'payload-two-step'
+export const MFA_TRUSTED = 'mfaTrusted'
+export const REMEMBER_COOKIE = 'payload-mfa'
 
 const HOUR = 60 * 60_000
 
 export const optionsOf = (payload: Payload): Resolved => {
-  const o = payload.config.custom?.twoStep as Resolved | undefined
-  if (!o) throw new Error('two-step: the plugin is not configured on this site.')
+  const o = payload.config.custom?.mfa as Resolved | undefined
+  if (!o) throw new Error('mfa: the plugin is not configured on this site.')
   return o
 }
 
@@ -38,7 +38,7 @@ export const keysOf = (payload: Payload): Keys => {
  * sign-in reads the account before its transaction and writes that whole copy back when it adds a session, which
  * would put old two-step state back over new. Here, only this plugin writes.
  */
-export type Loaded = { docId: string | number | null; state: TwoStepState }
+export type Loaded = { docId: string | number | null; state: MfaState }
 
 const STATE_FIELDS = ['secret', 'pending', 'enabledAt', 'lastStep', 'recovery', 'verifiedAt', 'sessions', 'emailCode', 'emailCodeExpires', 'emailBlockedUntil', 'enrollUntil', 'version'] as const
 
@@ -46,22 +46,22 @@ export async function loadState(payload: Payload, userId: string | number, req?:
   const o = optionsOf(payload)
   const doc = (await payload.find({ collection: o.stateSlug as never, where: { user: { equals: String(userId) } }, limit: 1, depth: 0, overrideAccess: true, pagination: false, ...(req ? { req } : {}) })).docs[0] as Record<string, unknown> | undefined
   if (!doc) return { docId: null, state: {} }
-  const state: TwoStepState = {}
+  const state: MfaState = {}
   for (const k of STATE_FIELDS) (state as Record<string, unknown>)[k] = doc[k] ?? null
   return { docId: doc.id as string, state }
 }
 
 /** On whenever there's a secret: it's only ever set with `enabledAt`, and turning off clears it. Anything odd counts as on. */
-export const isOnState = (s: TwoStepState) => Boolean(s.secret)
+export const isOnState = (s: MfaState) => Boolean(s.secret)
 
-export async function emit(payload: Payload, event: TwoStepEvent) {
+export async function emit(payload: Payload, event: MfaEvent) {
   await optionsOf(payload).onEvent?.(event)
 }
 
 /** Loads an account with its hidden fields. */
-export async function loadUser(payload: Payload, id: string | number, req?: PayloadRequest): Promise<TwoStepUser | null> {
+export async function loadUser(payload: Payload, id: string | number, req?: PayloadRequest): Promise<MfaUser | null> {
   const o = optionsOf(payload)
-  return (await payload.findByID({ collection: o.users as never, id, depth: 0, overrideAccess: true, showHiddenFields: true, disableErrors: true, ...(req ? { req } : {}) })) as unknown as TwoStepUser | null
+  return (await payload.findByID({ collection: o.users as never, id, depth: 0, overrideAccess: true, showHiddenFields: true, disableErrors: true, ...(req ? { req } : {}) })) as unknown as MfaUser | null
 }
 
 /**
@@ -69,7 +69,7 @@ export async function loadUser(payload: Payload, id: string | number, req?: Payl
  * false when another request got there first: the caller treats its code as wrong. These writes go straight to
  * the database, so they skip collection hooks (audit hooks included); `onEvent` is the record.
  */
-export async function saveIfUnchanged(payload: Payload, userId: string | number, loaded: Loaded, next: TwoStepState, req?: PayloadRequest): Promise<boolean> {
+export async function saveIfUnchanged(payload: Payload, userId: string | number, loaded: Loaded, next: MfaState, req?: PayloadRequest): Promise<boolean> {
   const o = optionsOf(payload)
   const version = loaded.state.version ?? 0
   const data: Record<string, unknown> = {}
@@ -85,7 +85,7 @@ export async function saveIfUnchanged(payload: Payload, userId: string | number,
     return Boolean(done)
   } catch (error) {
     // A duplicate first state, or a write conflict inside a transaction: someone else got there first.
-    payload.logger.warn({ err: error, msg: 'two-step: a state write lost a race, so it was refused' })
+    payload.logger.warn({ err: error, msg: 'mfa: a state write lost a race, so it was refused' })
     return false
   }
 }
@@ -102,13 +102,15 @@ export async function saveIfUnchanged(payload: Payload, userId: string | number,
 async function builtIn(payload: Payload, kind: LimitKind, key: string): Promise<boolean> {
   const o = optionsOf(payload)
   const max = kind.startsWith('emailCode') ? o.limits.emailCode : o.limits.code
-  const keyHash = createHash('sha256').update(`${payload.secret}|two-step|${kind}|${key}`).digest('hex')
+  const keyHash = createHash('sha256').update(`${payload.secret}|mfa|${kind}|${key}`).digest('hex')
   const now = Date.now()
   const at = new Date(now).toISOString()
   const mine = (await payload.create({ collection: o.attempts as never, data: { keyHash, at } as never, overrideAccess: true })) as unknown as { id: string | number }
   const since = new Date(now - o.limits.windowMinutes * 60_000).toISOString()
   // Allowed only if this try is among the window's first `max`, ordered by time then id, the same for every request.
   const { docs } = await payload.find({ collection: o.attempts as never, where: { and: [{ keyHash: { equals: keyHash } }, { at: { greater_than: since } }] } as never, sort: ['at', 'id'], limit: max, depth: 0, overrideAccess: true, pagination: false })
+  // Tries older than the window can't count any more: delete them, so refused tries can't grow the table without end.
+  await payload.db.deleteMany({ collection: o.attempts, where: { at: { less_than: since } } as never }).catch((err: unknown) => payload.logger.warn({ err, msg: 'mfa: old tries weren’t cleared; they will be next time' }))
   return (docs as unknown as { id: string | number }[]).some((d) => String(d.id) === String(mine.id))
 }
 
@@ -122,7 +124,7 @@ export async function allowed(payload: Payload, kind: 'code' | 'emailCode', user
     if (address && !(await check(`${kind}-address` as LimitKind, `address:${address}`))) return false
     return true
   } catch (error) {
-    payload.logger.error({ err: error, msg: 'two-step: the limiter failed, so the try was refused' })
+    payload.logger.error({ err: error, msg: 'mfa: the limiter failed, so the try was refused' })
     return false
   }
 }
@@ -130,14 +132,14 @@ export async function allowed(payload: Payload, kind: 'code' | 'emailCode', user
 // ------------------------------------------------------------------------------------------------
 // Codes
 
-export type Accepted = { next: TwoStepState; used: 'app' | 'email' | 'recovery' }
+export type Accepted = { next: MfaState; used: 'app' | 'email' | 'recovery' }
 
 /**
  * Checks a code: an app code (one step of drift either way; a step at or before the last one used is refused), an
  * emailed code (used once, before it expires, and not while blocked after a reset), or a recovery code (used up).
  * Returns the state to save, or null for a wrong code. Never throws.
  */
-export function acceptCode(keys: Keys, state: TwoStepState, code: unknown, now = Date.now()): Accepted | null {
+export function acceptCode(keys: Keys, state: MfaState, code: unknown, now = Date.now()): Accepted | null {
   if (typeof code !== 'string') return null
   const entered = code.trim()
   if (/^\d{8}$/.test(entered)) {
@@ -163,27 +165,27 @@ export function acceptCode(keys: Keys, state: TwoStepState, code: unknown, now =
 }
 
 /** An app code against a pending (not yet confirmed) secret. */
-export function acceptPending(keys: Keys, state: TwoStepState, code: unknown, now = Date.now()): number | null {
+export function acceptPending(keys: Keys, state: MfaState, code: unknown, now = Date.now()): number | null {
   if (typeof code !== 'string' || !/^\d{3}\s?\d{3}$/.test(code.trim())) return null
   const secret = open(keys, state.pending)
   return secret ? appCodeStep(secret, code.trim(), now) : null
 }
 
-export const emailBlocked = (s: TwoStepState, now = Date.now()) => Boolean(s.emailBlockedUntil && new Date(s.emailBlockedUntil).getTime() > now)
+export const emailBlocked = (s: MfaState, now = Date.now()) => Boolean(s.emailBlockedUntil && new Date(s.emailBlockedUntil).getTime() > now)
 
 // ------------------------------------------------------------------------------------------------
 // Remembered browsers: tied to the account, the secret and the password hash, so changing either ends it.
 
-const rememberMac = (keys: Keys, user: TwoStepUser, state: TwoStepState, expires: number) => mac(keys, `remember|${String(user.id)}|${expires}|${state.secret ?? ''}|${String(user.hash ?? '')}`)
+const rememberMac = (keys: Keys, user: MfaUser, state: MfaState, expires: number) => mac(keys, `remember|${String(user.id)}|${expires}|${state.secret ?? ''}|${String(user.hash ?? '')}`)
 
-export function rememberValueFor(payload: Payload, user: TwoStepUser, state: TwoStepState, now = Date.now()): string {
+export function rememberValueFor(payload: Payload, user: MfaUser, state: MfaState, now = Date.now()): string {
   const o = optionsOf(payload)
   const expires = now + o.rememberHours * HOUR
   return `${expires}.${rememberMac(keysOf(payload), user, state, expires)}`
 }
 
 /** The moment the code behind a remembered browser was given, or null when the value isn't valid now. */
-export function rememberedSince(payload: Payload, user: TwoStepUser, state: TwoStepState, value: unknown, now = Date.now()): number | null {
+export function rememberedSince(payload: Payload, user: MfaUser, state: MfaState, value: unknown, now = Date.now()): number | null {
   if (typeof value !== 'string') return null
   const o = optionsOf(payload)
   const [expires, given] = value.split('.')
@@ -194,7 +196,7 @@ export function rememberedSince(payload: Payload, user: TwoStepUser, state: TwoS
 }
 
 /** Keeps the per-session record small: only sessions the account still has. */
-export function withSession(state: TwoStepState, user: TwoStepUser, sid: string | undefined, at: string): TwoStepState {
+export function withSession(state: MfaState, user: MfaUser, sid: string | undefined, at: string): MfaState {
   const live = new Set((user.sessions ?? []).map((s) => s.id))
   const sessions: Record<string, string> = {}
   for (const [k, v] of Object.entries(state.sessions ?? {})) if (live.has(k)) sessions[k] = v
@@ -203,17 +205,17 @@ export function withSession(state: TwoStepState, user: TwoStepUser, sid: string 
 }
 
 /** When this session last gave a code. A session the record doesn't know falls back to nothing (not verified). */
-export const sessionVerifiedAt = (state: TwoStepState, sid: string | undefined) => (sid && state.sessions?.[sid] ? new Date(state.sessions[sid]!).getTime() : null)
+export const sessionVerifiedAt = (state: MfaState, sid: string | undefined) => (sid && state.sessions?.[sid] ? new Date(state.sessions[sid]!).getTime() : null)
 
-export async function isRequired(payload: Payload, user: TwoStepUser, req?: PayloadRequest): Promise<boolean> {
+export async function isRequired(payload: Payload, user: MfaUser, req?: PayloadRequest): Promise<boolean> {
   const o = optionsOf(payload)
   if (!o.requiredFor) return false
   try {
     return (await o.requiredFor({ user, req })) !== false
   } catch (error) {
-    payload.logger.error({ err: error, msg: 'two-step: requiredFor failed, so the account counts as required' })
+    payload.logger.error({ err: error, msg: 'mfa: requiredFor failed, so the account counts as required' })
     return true
   }
 }
 
-export const inEnrollWindow = (s: TwoStepState, now = Date.now()) => Boolean(s.enrollUntil && new Date(s.enrollUntil).getTime() > now)
+export const inEnrollWindow = (s: MfaState, now = Date.now()) => Boolean(s.enrollUntil && new Date(s.enrollUntil).getTime() > now)

@@ -5,7 +5,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { BasePayload, buildConfig, createLocalReq, getPayload, type Endpoint, type Payload, type PayloadRequest, type SanitizedConfig } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, twoStep, TWO_STEP_TRUSTED, verify, type Limiter, type TwoStepEvent } from '../src/index.js'
+import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, moveLegacyState, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, turnOff, mfa, MFA_TRUSTED, verify, type Limiter, type MfaEvent } from '../src/index.js'
 import { deriveKey, open, seal } from '../src/crypto.js'
 import { allowed, optionsOf } from '../src/core.js'
 
@@ -17,7 +17,7 @@ let payload: Payload
 let config: SanitizedConfig
 let mongo: MongoMemoryReplSet
 const mail: { to: string; text: string }[] = []
-const events: TwoStepEvent[] = []
+const events: MfaEvent[] = []
 let n = 0
 const email = (name: string) => `${name}-${++n}@example.invalid`
 
@@ -32,7 +32,7 @@ const reason = async (p: Promise<unknown>) => {
     await p
     return 'signed in'
   } catch (error) {
-    return (error as { twoStep?: string }).twoStep ?? (error as Error).message
+    return (error as { mfa?: string }).mfa ?? (error as Error).message
   }
 }
 /** Sets up an app for an account and returns its secret. */
@@ -44,7 +44,7 @@ const enrol = async (u: U) => {
 /** The account (for its sessions) and its two-step state document. */
 const state = async (u: U) => {
   const account = (await payload.findByID({ collection: 'users', id: u.id, overrideAccess: true, showHiddenFields: true, depth: 0 })) as unknown as { sessions?: { id: string }[] }
-  const doc = (await payload.find({ collection: 'two-step-state' as never, where: { user: { equals: String(u.id) } }, limit: 1, overrideAccess: true })).docs[0] as unknown as Record<string, any>
+  const doc = (await payload.find({ collection: 'mfa-state' as never, where: { user: { equals: String(u.id) } }, limit: 1, overrideAccess: true })).docs[0] as unknown as Record<string, any>
   return { sessions: account.sessions, twoStep: doc ?? {}, docId: doc?.id }
 }
 /** The next time step's code: accepted now (drift), and it moves `lastStep` past the current one. */
@@ -59,7 +59,7 @@ beforeAll(async () => {
     db: mongooseAdapter({ url: mongo.getUri('twostep'), ensureIndexes: true }),
     collections: [{ slug: 'users', auth: true, access: { read: () => true, update: () => true }, fields: [{ name: 'role', type: 'text' }] }],
     plugins: [
-      twoStep({
+      mfa({
         requiredFor: ({ user }) => {
           if ((user as unknown as U).role === 'broken') throw new Error('rule failed')
           return (user as unknown as U).role === 'staff'
@@ -132,7 +132,7 @@ describe('signing in', () => {
     await enrol(u)
     const token = await payload.forgotPassword({ collection: 'users', data: { email: u.email }, disableEmail: true })
     const req = await reqWith()
-    req.context = { [TWO_STEP_TRUSTED]: true }
+    req.context = { [MFA_TRUSTED]: true }
     await payload.resetPassword({ collection: 'users', data: { token: token as string, password: 'a-new-password-1' }, overrideAccess: true, req })
     expect(new Date((await state(u)).twoStep.emailBlockedUntil).getTime()).toBeGreaterThan(Date.now())
   })
@@ -175,14 +175,14 @@ describe('sessions and remembered browsers', () => {
     const a = await sidOf(u)
     // Another sign-in vouched for by the site's own code (no code given): not verified.
     const req = await reqWith()
-    await login(u, { context: { [TWO_STEP_TRUSTED]: true }, req })
+    await login(u, { context: { [MFA_TRUSTED]: true }, req })
     const b = await sidOf(u)
     expect(a).not.toBe(b)
     await refresh({ ...u, _sid: a })
     await expect(refresh({ ...u, _sid: b })).rejects.toThrow()
     // Session A's code was given more than the window ago.
     const s = await state(u)
-    await payload.db.updateOne({ collection: 'two-step-state', id: s.docId, data: { sessions: { [a]: new Date(Date.now() - 23 * 3_600_000).toISOString() } } })
+    await payload.db.updateOne({ collection: 'mfa-state', id: s.docId, data: { sessions: { [a]: new Date(Date.now() - 23 * 3_600_000).toISOString() } } })
     await expect(refresh({ ...u, _sid: a })).rejects.toThrow()
   })
 
@@ -283,6 +283,13 @@ describe('races with Payload’s own sign-in', () => {
     expect([first, await second].sort()).toEqual(['signed in', 'wrong'])
   })
 
+  it('deletes tries older than the window, so refused tries can’t pile up', async () => {
+    const u = await make()
+    await payload.db.create({ collection: 'mfa-attempts', data: { keyHash: 'old-try', at: new Date(Date.now() - 2 * 60 * 60_000).toISOString() } })
+    await allowed(payload, 'code', u.id)
+    expect((await payload.count({ collection: 'mfa-attempts' as never, where: { keyHash: { equals: 'old-try' } }, overrideAccess: true })).totalDocs).toBe(0)
+  })
+
   it('the built-in limit lets at most five of forty tries at once through', async () => {
     const u = await make()
     const results = await Promise.all(Array.from({ length: 40 }, () => allowed(payload, 'code', u.id)))
@@ -343,7 +350,7 @@ describe('telling nothing, keeping nothing readable', () => {
     expect(text).not.toContain(recoveryCodes[0]!)
     const read = (await payload.findByID({ collection: 'users', id: u.id, overrideAccess: false, user: { ...u, collection: 'users' } as never })) as Record<string, unknown>
     expect(read.twoStep).toBeUndefined()
-    await expect(payload.find({ collection: 'two-step-state' as never, overrideAccess: false, user: { ...u, collection: 'users' } as never })).rejects.toThrow()
+    await expect(payload.find({ collection: 'mfa-state' as never, overrideAccess: false, user: { ...u, collection: 'users' } as never })).rejects.toThrow()
   })
 
   it('opens an app secret sealed the way Captive Origins seals them today, with its key settings', () => {
@@ -360,7 +367,7 @@ describe('telling nothing, keeping nothing readable', () => {
 
 describe('the login endpoint', () => {
   const post = async (body: unknown) => {
-    const ep = (payload.collections.users!.config.endpoints as Endpoint[]).find((e) => e.path === '/two-step/login')!
+    const ep = (payload.collections.users!.config.endpoints as Endpoint[]).find((e) => e.path === '/mfa/login')!
     const req = await reqWith({ 'content-type': 'application/json' })
     ;(req as unknown as { json: () => Promise<unknown> }).json = async () => body
     return ep.handler(req)
@@ -371,17 +378,17 @@ describe('the login endpoint', () => {
     expect(unknown).toEqual(wrong)
     const u = await make()
     const { key } = await enrol(u)
-    expect(await (await post({ email: u.email, password: PW })).json()).toEqual({ ok: false, twoStep: 'needed' })
+    expect(await (await post({ email: u.email, password: PW })).json()).toEqual({ ok: false, mfa: 'needed' })
     const ok = await post({ email: u.email, password: PW, code: nextStepCode(key) })
     expect(ok.status).toBe(200)
-    expect(ok.headers.getSetCookie().some((c) => c.startsWith('payload-two-step='))).toBe(true)
+    expect(ok.headers.getSetCookie().some((c) => c.startsWith('payload-mfa='))).toBe(true)
   })
 })
 
 describe('moving state Captive Origins kept on the account', () => {
-  it('moves it once at startup, removes it from the account, and keeps two-step on', async () => {
+  it('refuses an account with unmoved state, moves it with an explicit run (safe to repeat), and keeps two-step on', async () => {
     const legacyCfg = (fields: any[] = []) =>
-      buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('legacy'), ensureIndexes: true }), collections: [{ slug: 'users', auth: true, fields }], plugins: [twoStep({ legacyUserField: 'twoStep', keyDerivation: { salt: 'captive-origins', info: 'two-step-secret' } })] })
+      buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('legacy'), ensureIndexes: true }), collections: [{ slug: 'users', auth: true, fields }], plugins: [mfa({ legacyUserField: 'twoStep', keyDerivation: { salt: 'captive-origins', info: 'two-step-secret' } })] })
     await expect(legacyCfg([{ name: 'twoStep', type: 'group', fields: [{ name: 'secret', type: 'text' }] }])).rejects.toThrow(/remove the "twoStep" field/)
     const first = await new BasePayload().init({ config: await legacyCfg() })
     const u = (await first.create({ collection: 'users', data: { email: 'legacy@example.invalid', password: PW } as never })) as unknown as U
@@ -389,22 +396,29 @@ describe('moving state Captive Origins kept on the account', () => {
     const sealed = seal(deriveKey(SECRET, 'captive-origins', 'two-step-secret'), secret)
     // The account as Captive Origins stores it today: the group on the account, sealed with its key settings.
     await (first.db as any).collections.users.collection.updateOne({ email: 'legacy@example.invalid' }, { $set: { twoStep: { secret: sealed, enabledAt: new Date().toISOString(), recovery: [] } } })
+    const half = (await first.create({ collection: 'users', data: { email: 'half@example.invalid', password: PW } as never })) as unknown as U
+    await (first.db as any).collections.users.collection.updateOne({ email: 'half@example.invalid' }, { $set: { twoStep: { pending: sealed } } })
     await first.destroy()
     const second = await new BasePayload().init({ config: await legacyCfg() })
+    // Not moved yet: refused even with a good code, so it can't run half-moved.
+    expect(await signIn(second, { email: 'legacy@example.invalid', password: PW, code: codeFor(secret) }).then(() => 'signed in', (e) => e.mfa)).toBe('needed')
+    expect(await moveLegacyState(second)).toEqual({ moved: 1, alreadyMoved: 0, unfinished: 1, cleared: 2 })
+    expect(await moveLegacyState(second)).toEqual({ moved: 0, alreadyMoved: 0, unfinished: 0, cleared: 0 })
+    void half
     expect(await (second.db as any).collections.users.collection.countDocuments({ twoStep: { $exists: true } })).toBe(0)
-    const moved = (await second.find({ collection: 'two-step-state' as never, where: { user: { equals: String(u.id) } }, overrideAccess: true })).docs
+    const moved = (await second.find({ collection: 'mfa-state' as never, where: { user: { equals: String(u.id) } }, overrideAccess: true })).docs
     expect(moved).toHaveLength(1)
     expect(await isOnFor(second, u.id)).toBe(true)
-    const why = await signIn(second, { email: 'legacy@example.invalid', password: PW }).then(() => 'signed in', (e) => e.twoStep)
+    const why = await signIn(second, { email: 'legacy@example.invalid', password: PW }).then(() => 'signed in', (e) => e.mfa)
     expect(why).toBe('needed')
-    expect(await signIn(second, { email: 'legacy@example.invalid', password: PW, code: codeFor(secret) }).then(() => 'signed in', (e) => e.twoStep)).toBe('signed in')
+    expect(await signIn(second, { email: 'legacy@example.invalid', password: PW, code: codeFor(secret) }).then(() => 'signed in', (e) => e.mfa)).toBe('signed in')
     await second.destroy()
   })
 })
 
 describe('refusing to start', () => {
   const build = (over: Record<string, unknown>, opts = {}) =>
-    buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('x') }), collections: [{ slug: 'users', auth: true, fields: [] }], ...over, plugins: [twoStep(opts)] })
+    buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('x') }), collections: [{ slug: 'users', auth: true, fields: [] }], ...over, plugins: [mfa(opts)] })
   it('with a short app secret, without the auth collection, or with API keys on it', async () => {
     await expect(build({ secret: 'short' })).rejects.toThrow(/at least 32/)
     await expect(build({ collections: [{ slug: 'people', auth: true, fields: [] }] })).rejects.toThrow(/no auth collection/)

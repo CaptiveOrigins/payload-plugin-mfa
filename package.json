@@ -1,27 +1,27 @@
 {
-  "name": "@captiveorigins/payload-plugin-two-step",
+  "name": "@captiveorigins/payload-plugin-mfa",
   "version": "0.1.0",
-  "description": "Two-step sign-in for Payload: an authenticator code after the password, with email and recovery codes as backups, each used once, rate limited per account, and required by a rule you set.",
+  "description": "MFA for Payload (two-step sign-in): an authenticator code after the password, with email and recovery codes as backups, each used once, rate limited per account, and required by a rule you set.",
   "keywords": [
     "payload",
     "payload-plugin",
     "payloadcms",
-    "two-step",
-    "two-factor",
-    "2fa",
-    "totp",
     "mfa",
+    "2fa",
+    "two-factor",
+    "two-step",
+    "totp",
     "recovery-codes",
     "authentication"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/CaptiveOrigins/payload-plugin-two-step#readme",
+  "homepage": "https://github.com/CaptiveOrigins/payload-plugin-mfa#readme",
   "bugs": {
-    "url": "https://github.com/CaptiveOrigins/payload-plugin-two-step/issues"
+    "url": "https://github.com/CaptiveOrigins/payload-plugin-mfa/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CaptiveOrigins/payload-plugin-two-step.git"
+    "url": "git+https://github.com/CaptiveOrigins/payload-plugin-mfa.git"
   },
   "type": "module",
   "exports": {

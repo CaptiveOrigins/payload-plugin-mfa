@@ -2,7 +2,7 @@
 
 ## 2026-11-10 (0.1.0)
 
-Each promise in the README and ADR 0001, and the test that proves it (`test/two-step.test.ts`):
+Each promise in the README and ADR 0001, and the test that proves it (`test/mfa.test.ts`):
 
 | Promise | Test |
 | --- | --- |
@@ -28,6 +28,7 @@ Each promise in the README and ADR 0001, and the test that proves it (`test/two-
 | A sign-in begun earlier can't turn two-step off | "a sign-in that began before two-step was confirmed…" (Platform's repro) |
 | A recovery code signs in once against an earlier-begun sign-in | "one recovery code signs in once…" (Platform's repro) |
 | The limiter holds under 40 tries at once | "the built-in limit lets at most five…" (fails with count-then-record) |
-| Old state moves once from the account and signs in | "moves it once at startup…" (also proves the raw-secret key) |
+| Old state: refused until moved, moved by an explicit run (repeatable), then signs in | "refuses an account with unmoved state…" (also proves the raw-secret key) |
+| Old tries are deleted | "deletes tries older than the window…" |
 
 Gaps, skipped with reason: the built-in limiter's window rollover (simple count-since-time code, covered by the per-account test's refusal); `rememberHours` versus `tokenExpiration` at startup (a config check, low risk). Bigger: a test against a real browser flow belongs to the site's wiring.

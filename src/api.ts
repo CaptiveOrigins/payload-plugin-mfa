@@ -14,27 +14,27 @@ import {
   optionsOf,
   rememberValueFor,
   saveIfUnchanged,
-  TWO_STEP_CODE,
-  TWO_STEP_REMEMBER,
+  MFA_CODE,
+  MFA_REMEMBER,
   withSession,
 } from './core.js'
-import type { TwoStepState, TwoStepUser } from './types.js'
+import type { MfaState, MfaUser } from './types.js'
 
 const HOUR = 60 * 60_000
 
 /** A refusal a site can show, with a stable reason. */
-export class TwoStepRefused extends Error {
+export class MfaRefused extends Error {
   constructor(
     readonly reason: 'notFound' | 'notOn' | 'alreadyOn' | 'needsCode' | 'wrongCode' | 'tooMany' | 'noPending' | 'busy',
     message: string,
   ) {
     super(message)
-    this.name = 'TwoStepRefused'
+    this.name = 'MfaRefused'
   }
 }
 
-const refuse = (reason: TwoStepRefused['reason'], message: string): never => {
-  throw new TwoStepRefused(reason, message)
+const refuse = (reason: MfaRefused['reason'], message: string): never => {
+  throw new MfaRefused(reason, message)
 }
 
 async function load(payload: Payload, userId: string | number, req?: PayloadRequest) {
@@ -74,11 +74,11 @@ export async function verify(payload: Payload, args: { user: { id: string | numb
 
 /**
  * Signs in for server code (a Next server action, say): Payload's own login with the code or the remembered value
- * in context, where HTTP can't put them. Throws Payload's usual error; a `TwoStepError` says `needed`, `wrong` or `enroll`.
+ * in context, where HTTP can't put them. Throws Payload's usual error; a `MfaError` says `needed`, `wrong` or `enroll`.
  */
 export async function signIn(payload: Payload, args: { email: string; password: string; code?: string; remember?: string; req?: PayloadRequest; context?: RequestContext }) {
   const o = optionsOf(payload)
-  const context: RequestContext = { ...(args.context ?? {}), ...(args.code ? { [TWO_STEP_CODE]: args.code } : args.remember ? { [TWO_STEP_REMEMBER]: args.remember } : {}) }
+  const context: RequestContext = { ...(args.context ?? {}), ...(args.code ? { [MFA_CODE]: args.code } : args.remember ? { [MFA_REMEMBER]: args.remember } : {}) }
   return payload.login({ collection: o.users as never, data: { email: args.email, password: args.password }, context, ...(args.req ? { req: args.req } : {}) })
 }
 
@@ -95,7 +95,7 @@ export async function rememberValue(payload: Payload, args: { userId: string | n
 export async function start(payload: Payload, args: { userId: string | number; code?: unknown; req?: PayloadRequest }): Promise<{ uri: string; key: string }> {
   const o = optionsOf(payload)
   const { user, loaded, state } = await load(payload, args.userId, args.req)
-  let base: TwoStepState = state
+  let base: MfaState = state
   if (isOnState(state)) {
     if (typeof args.code !== 'string' || !args.code.trim()) refuse('needsCode', 'Enter a code from your current app, or a recovery code, to set up a new one.')
     if (!(await allowed(payload, 'code', user.id, args.req))) refuse('tooMany', 'Too many tries. Please wait a few minutes.')
@@ -143,7 +143,7 @@ async function withCode(payload: Payload, args: { userId: string | number; code:
 /** Turns two-step off. The site checks the password first; a current code (or recovery code) is needed too. */
 export async function turnOff(payload: Payload, args: { userId: string | number; code: unknown; req?: PayloadRequest }) {
   const { user, loaded, state } = await withCode(payload, args)
-  const cleared: TwoStepState = { secret: null, pending: null, enabledAt: null, lastStep: null, recovery: [], verifiedAt: null, sessions: {}, emailCode: null, emailCodeExpires: null, emailBlockedUntil: state.emailBlockedUntil ?? null, enrollUntil: null }
+  const cleared: MfaState = { secret: null, pending: null, enabledAt: null, lastStep: null, recovery: [], verifiedAt: null, sessions: {}, emailCode: null, emailCodeExpires: null, emailBlockedUntil: state.emailBlockedUntil ?? null, enrollUntil: null }
   if (!(await saveIfUnchanged(payload, user.id, loaded, cleared, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'turned-off', user: String(user.id), req: args.req })
 }
@@ -166,7 +166,7 @@ export async function sendEmailCode(payload: Payload, args: { email: string; req
   const o = optionsOf(payload)
   const email = String(args.email ?? '').trim().toLowerCase()
   if (!email) return
-  const found = (await payload.find({ collection: o.users as never, where: { email: { equals: email } }, limit: 1, depth: 0, overrideAccess: true, showHiddenFields: true, ...(args.req ? { req: args.req } : {}) })).docs[0] as unknown as TwoStepUser | undefined
+  const found = (await payload.find({ collection: o.users as never, where: { email: { equals: email } }, limit: 1, depth: 0, overrideAccess: true, showHiddenFields: true, ...(args.req ? { req: args.req } : {}) })).docs[0] as unknown as MfaUser | undefined
   if (!found) return
   const loaded = await loadState(payload, found.id, args.req)
   const state = loaded.state
@@ -180,7 +180,7 @@ export async function sendEmailCode(payload: Payload, args: { email: string; req
     await send({ payload, to: email, code, minutes: o.emailCodeMinutes, req: args.req })
     await emit(payload, { type: 'email-code-sent', user: String(found.id), req: args.req })
   } catch (error) {
-    payload.logger.error({ err: error, msg: 'two-step: an email code was not sent' })
+    payload.logger.error({ err: error, msg: 'mfa: an email code was not sent' })
   }
 }
 
@@ -207,5 +207,5 @@ export async function afterPasswordSet(payload: Payload, args: { userId: string 
       return
     }
   }
-  throw new Error('two-step: could not block email codes after the new password; try again.')
+  throw new Error('mfa: could not block email codes after the new password; try again.')
 }

@@ -119,3 +119,10 @@ Platform reproduced three problems against Payload 3.92's real `login`. All are 
 4. **Smaller: a remembered sign-in whose session record loses a race** now reads the state again and tries once more, and logs if that fails too.
 
 Found while doing this: **the key must come from the raw app secret** (`payload.config.secret`), as Captive Origins derives it. `payload.secret` is Payload's own hash of it and gives a different key, which would have left the site's stored authenticator secrets unreadable. The move test proves a secret sealed the site's way opens and signs in.
+
+## Renamed, and Platform's final read (2026-11-10)
+
+- **Renamed** to `payload-plugin-mfa` by the owner (see `docs/decisions.md`). The text above keeps its original names (two-step, `twoStep()`, `two-step-state`); in the code they're now `mfa()`, `MfaError`, `MFA_*`, `mfa-state` and `mfa-attempts`.
+- **Attempt records expire.** Every try writes a record, refused ones included. Tries older than the window are now deleted as new ones arrive, with a test.
+- **The legacy move is explicit.** It runs as `moveLegacyState(payload)`, a script the site runs once after a backup, not at every cold start where two instances could race. An account whose old state hasn't moved can't sign in, so nothing runs half-moved. An existing new state counts as moved; a setup never confirmed is dropped and counted.
+- **Clock skew** between servers is documented as a limit of the try order.
