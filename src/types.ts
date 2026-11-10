@@ -21,11 +21,13 @@ export type MfaState = {
   emailBlockedUntil?: string | null
   /** A staff-given window to sign in and enrol while two-step is required. Ends at the first successful confirm. */
   enrollUntil?: string | null
+  /** When a maintainer last reset two-step: any session made before it is refused, even one a racing sign-in wrote back. */
+  resetAt?: string | null
   /** Bumped on every write, so two requests racing with the same code can't both win. */
   version?: number | null
 }
 
-export type MfaUser = { id: string | number; email?: string | null; collection?: string; hash?: string | null; sessions?: { id: string; expiresAt?: string | Date }[] | null; _sid?: string } & Record<string, unknown>
+export type MfaUser = { id: string | number; email?: string | null; collection?: string; hash?: string | null; sessions?: { id: string; createdAt?: string | Date; expiresAt?: string | Date }[] | null; _sid?: string } & Record<string, unknown>
 
 export type MfaEvent = {
   type: 'started' | 'confirmed' | 'turned-off' | 'recovery-renewed' | 'recovery-used' | 'email-code-sent' | 'email-codes-blocked' | 'enrollment-window' | 'too-many-tries' | 'reset'

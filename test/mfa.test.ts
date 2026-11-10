@@ -375,6 +375,21 @@ describe('status and a maintainer’s reset', () => {
     await resetFor(payload, u.id)
     expect(await who()).toBeNull()
     expect((await state(u)).twoStep.emailBlockedUntil).toBe(blocked)
+    // A sign-in racing the reset writes the whole account back, old sessions included: they still don't work.
+    const w = await make()
+    const { key: wKey } = await enrol(w)
+    const { token: stolen } = await login(w, { code: nextStepCode(wKey) })
+    const sessionsBefore = ((await state(w)).sessions ?? []) as unknown[]
+    expect(sessionsBefore.length).toBeGreaterThan(0)
+    await resetFor(payload, w.id)
+    await payload.db.updateOne({ collection: 'users', where: { id: { equals: w.id } }, data: { sessions: sessionsBefore } } as never)
+    expect((await payload.auth({ headers: new Headers({ Authorization: `JWT ${stolen}` }) })).user).toBeNull()
+    const req = await reqWith({}, { ...(w as U), _sid: (sessionsBefore[0] as { id: string }).id, sessions: sessionsBefore as never } as never)
+    const hooks = payload.collections.users!.config.hooks.beforeOperation ?? []
+    await expect((async () => { for (const h of hooks) await h({ operation: 'refresh', req, args: {} as never, collection: payload.collections.users!.config, context: {} } as never) })()).rejects.toThrow()
+    // A session made after the reset works: here, signing in again inside the enrollment window.
+    const { token: after } = await login(u)
+    expect((await payload.auth({ headers: new Headers({ Authorization: `JWT ${after}` }) })).user).toBeTruthy()
     const v = await make()
     const { token: kept } = await login(v)
     await resetFor(payload, v.id, { endSessions: false })

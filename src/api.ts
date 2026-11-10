@@ -144,7 +144,7 @@ async function withCode(payload: Payload, args: { userId: string | number; code:
 /** Turns two-step off. The site checks the password first; a current code (or recovery code) is needed too. */
 export async function turnOff(payload: Payload, args: { userId: string | number; code: unknown; req?: PayloadRequest }) {
   const { user, loaded, state } = await withCode(payload, args)
-  const cleared: MfaState = { secret: null, pending: null, enabledAt: null, lastStep: null, recovery: [], verifiedAt: null, sessions: {}, emailCode: null, emailCodeExpires: null, emailBlockedUntil: state.emailBlockedUntil ?? null, enrollUntil: null }
+  const cleared: MfaState = { secret: null, pending: null, enabledAt: null, lastStep: null, recovery: [], verifiedAt: null, sessions: {}, emailCode: null, emailCodeExpires: null, emailBlockedUntil: state.emailBlockedUntil ?? null, enrollUntil: null, resetAt: state.resetAt ?? null }
   if (!(await saveIfUnchanged(payload, user.id, loaded, cleared, args.req))) refuse('busy', 'Something changed at the same moment. Please try again.')
   await emit(payload, { type: 'turned-off', user: String(user.id), req: args.req })
 }
@@ -251,6 +251,8 @@ export async function resetFor(payload: Payload, userId: string | number, args: 
       emailCodeExpires: null,
       emailBlockedUntil: loaded.state.emailBlockedUntil ?? null,
       enrollUntil: new Date(Date.now() + hours * HOUR).toISOString(),
+      // Sessions made before this moment stop working, unless the maintainer chose to keep them.
+      resetAt: args.endSessions === false ? (loaded.state.resetAt ?? null) : new Date().toISOString(),
     }
     if (await saveIfUnchanged(payload, user!.id, loaded, cleared, args.req)) {
       await clearAccountTries(payload, user!.id, args.req)

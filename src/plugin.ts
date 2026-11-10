@@ -14,6 +14,7 @@ import {
   REMEMBER_COOKIE,
   rememberedSince,
   saveIfUnchanged,
+  sessionBeforeReset,
   sessionVerifiedAt,
   MFA_CODE,
   MFA_REMEMBER,
@@ -53,6 +54,7 @@ function stateCollection(o: Resolved): CollectionConfig {
       { name: 'emailCodeExpires', type: 'date' },
       { name: 'emailBlockedUntil', type: 'date' },
       { name: 'enrollUntil', type: 'date' },
+      { name: 'resetAt', type: 'date' },
       { name: 'version', type: 'number', index: true },
     ],
   }
@@ -120,6 +122,7 @@ const beforeOperation: CollectionBeforeOperationHook = async ({ operation, req }
   const o = optionsOf(payload)
   const user = req.user as unknown as MfaUser
   const { state } = await loadState(payload, user.id, req)
+  if (sessionBeforeReset(state, user)) throw new Forbidden(req.t)
   if (!isOnState(state)) {
     if ((await isRequired(payload, user, req)) && !inEnrollWindow(state)) throw new Forbidden(req.t)
     return
@@ -137,7 +140,7 @@ const afterOperation: CollectionAfterOperationHook = async ({ operation, req, re
   return result
 }
 
-/** Signs out, on its next request, a session whose account must now have two-step and doesn't. Only with a rule. */
+/** Signs out, on its next request, a session made before a reset, and one whose account must now have two-step and doesn't. */
 function wrapStrategies(payload: Payload, o: Resolved) {
   payload.authStrategies = payload.authStrategies.map(
     (strategy): AuthStrategy => ({
@@ -145,8 +148,11 @@ function wrapStrategies(payload: Payload, o: Resolved) {
       authenticate: async (args) => {
         const result = await strategy.authenticate(args)
         const user = result.user as MfaUser | null
-        if (!user || user.collection !== o.users || !o.requiredFor) return result
+        if (!user || user.collection !== o.users) return result
+        // One small read per signed-in request: needed so a reset ends sessions even when a sign-in raced it.
         const { state } = await loadState(payload, user.id)
+        if (sessionBeforeReset(state, user)) return { ...result, user: null }
+        if (!o.requiredFor) return result
         if (!isOnState(state) && (await isRequired(payload, user)) && !inEnrollWindow(state)) return { ...result, user: null }
         return result
       },

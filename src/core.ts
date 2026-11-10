@@ -40,7 +40,7 @@ export const keysOf = (payload: Payload): Keys => {
  */
 export type Loaded = { docId: string | number | null; state: MfaState }
 
-const STATE_FIELDS = ['secret', 'pending', 'enabledAt', 'lastStep', 'recovery', 'verifiedAt', 'sessions', 'emailCode', 'emailCodeExpires', 'emailBlockedUntil', 'enrollUntil', 'version'] as const
+const STATE_FIELDS = ['secret', 'pending', 'enabledAt', 'lastStep', 'recovery', 'verifiedAt', 'sessions', 'emailCode', 'emailCodeExpires', 'emailBlockedUntil', 'enrollUntil', 'resetAt', 'version'] as const
 
 export async function loadState(payload: Payload, userId: string | number, req?: PayloadRequest): Promise<Loaded> {
   const o = optionsOf(payload)
@@ -227,6 +227,20 @@ export async function isRequired(payload: Payload, user: MfaUser, req?: PayloadR
     payload.logger.error({ err: error, msg: 'mfa: requiredFor failed, so the account counts as required' })
     return true
   }
+}
+
+/**
+ * True when this session was made before the account's last reset, or can't be dated while a reset exists: it's
+ * refused. Payload's sign-in and refresh write the whole account back, so a sign-in racing the reset can restore
+ * the sessions it emptied; this check stops them working anyway.
+ */
+export function sessionBeforeReset(state: MfaState, user: MfaUser): boolean {
+  if (!state.resetAt) return false
+  const sid = user._sid
+  if (!sid) return false // not a session sign-in (an API key, say): the reset doesn't cover those
+  const session = (user.sessions ?? []).find((s) => s.id === sid)
+  const made = session?.createdAt ? new Date(session.createdAt).getTime() : NaN
+  return !Number.isFinite(made) || made < new Date(state.resetAt).getTime()
 }
 
 export const inEnrollWindow = (s: MfaState, now = Date.now()) => Boolean(s.enrollUntil && new Date(s.enrollUntil).getTime() > now)

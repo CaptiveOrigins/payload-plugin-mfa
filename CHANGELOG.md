@@ -3,9 +3,11 @@
 ## 0.1.1 (unreleased)
 
 - `statusFor(payload, userId)`: `{ on, since, recoveryLeft }` for the person's security page, so a site doesn't read the state collection itself.
-- `resetFor(payload, userId, { enrollHours, actor, endSessions })`: a maintainer's reset without a code. It goes through the version-checked write, clears the account's limiter tries, signs the account out everywhere by default, opens an enrollment window and sends a `reset` event naming the actor. Both are server-only, with no endpoint. Asked for by the Captive Origins site wiring.
+- `resetFor(payload, userId, { enrollHours, actor, endSessions })`: a maintainer's reset without a code. It goes through the version-checked write, clears the account's limiter tries, signs the account out everywhere by default (and refuses any session made before the reset, even one a racing sign-in wrote back), opens an enrollment window and sends a `reset` event naming the actor. Both are server-only, with no endpoint. Asked for by the Captive Origins site wiring.
 
-Tested: 5 new tests (29 in all), including a reset racing a write that would keep the old secret. A security read approved 85b901f; its points are fixed here. A mutation check shows each part of the reset fails one of the reset's own tests when removed: the cleared secret and recovery codes, the version guard, the cleared tries, ending sessions, the kept email-code block, and both window bounds. Not yet used on a site.
+- Every signed-in request now reads the account's two-step state once, whether or not the site has a `requiredFor` rule, so a reset can end sessions that a racing sign-in wrote back.
+
+Tested: 5 new tests (29 in all), including a reset racing a write that would keep the old secret, and old sessions written back after a reset (refused at request and at refresh). A security read approved 85b901f and found the session race in da6bfe2; both are fixed here. A mutation check shows each part of the reset fails one of the reset's own tests when removed: the cleared secret and recovery codes, the version guard, the cleared tries, ending sessions, the kept email-code block, and both window bounds. Not yet used on a site.
 
 ## 0.1.0 (unreleased)
 
