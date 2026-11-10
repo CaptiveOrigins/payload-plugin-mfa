@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, moveLegacyState, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, statusFor, resetFor, turnOff, mfa, MFA_TRUSTED, verify, type Limiter, type MfaEvent } from '../src/index.js'
 import { deriveKey, open, seal } from '../src/crypto.js'
-import { allowed, optionsOf } from '../src/core.js'
+import { allowed, optionsOf, sessionBeforeReset } from '../src/core.js'
 
 /** A made-up site: staff must use two-step, members may. Codes come from the secret `start` returns. */
 type U = { id: string; email: string; role: string; sessions?: { id: string }[] }
@@ -390,6 +390,19 @@ describe('status and a maintainer’s reset', () => {
     // A session made after the reset works: here, signing in again inside the enrollment window.
     const { token: after } = await login(u)
     expect((await payload.auth({ headers: new Headers({ Authorization: `JWT ${after}` }) })).user).toBeTruthy()
+    // Turning two-step off afterwards keeps the reset time, so the written-back session still doesn't work.
+    const { key: again } = await enrol(w)
+    await turnOff(payload, { userId: w.id, code: nextStepCode(again) })
+    expect((await state(w)).twoStep.resetAt).toBeTruthy()
+    expect((await payload.auth({ headers: new Headers({ Authorization: `JWT ${stolen}` }) })).user).toBeNull()
+    // A session that can't be dated against the reset is refused; one made after it isn't; no reset, no check.
+    const resetAt = new Date().toISOString()
+    const later = new Date(Date.now() + 1000).toISOString()
+    expect(sessionBeforeReset({ resetAt }, { id: 'u', _sid: 's', sessions: [{ id: 's' }] })).toBe(true)
+    expect(sessionBeforeReset({ resetAt }, { id: 'u', _sid: 's', sessions: [{ id: 's', createdAt: 'not a date' }] })).toBe(true)
+    expect(sessionBeforeReset({ resetAt }, { id: 'u', _sid: 's', sessions: [] })).toBe(true)
+    expect(sessionBeforeReset({ resetAt }, { id: 'u', _sid: 's', sessions: [{ id: 's', createdAt: later }] })).toBe(false)
+    expect(sessionBeforeReset({}, { id: 'u', _sid: 's', sessions: [{ id: 's' }] })).toBe(false)
     const v = await make()
     const { token: kept } = await login(v)
     await resetFor(payload, v.id, { endSessions: false })

@@ -43,6 +43,7 @@ Gaps, skipped with reason: the built-in limiter's window rollover (simple count-
 
 | resetFor signs the account out everywhere (unless `endSessions: false`) and keeps the email-code block | `status and a maintainer's reset > signs the account out…` |
 | Sessions made before a reset stay refused at request and refresh even when written back by a racing sign-in; `endSessions: false` keeps them | `status and a maintainer's reset > signs the account out…` |
+| turnOff keeps the reset time; an undated session is refused, a later one isn't, no reset means no check | `status and a maintainer's reset > signs the account out…` |
 | resetFor wins against a racing write that would keep the old secret | `status and a maintainer's reset > wins against a racing write…` |
 
 Gaps added: the five tests above; the last two after the security read (a subagent, Plugin Security's checklist) found the version guard, the upper bound and the kept email block caught only elsewhere or not at all. A mutation check now catches 9 of 9 guards in these tests, after one assertion was added: kept recovery codes weren't caught at first, because a required account is refused for enrollment before any code is checked. Gaps skipped: a site's own limiter isn't cleared by resetFor (said in the README).
