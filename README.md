@@ -14,6 +14,16 @@ MFA for Payload (two-step sign-in): an authenticator code after the password, wi
 - **After a password reset,** emailed codes are off for 24 hours, since the mailbox has just proved itself. The plugin does this by itself after Payload's `resetPassword`.
 - **Nothing readable.** The secret is sealed with AES-256-GCM, using a key derived from your app secret. Codes are stored hashed. The state lives in its own `mfa-state` collection (one document per account), hidden from every API read and never written by Payload's sign-in.
 
+## On its own, and with others
+
+**On its own:** it adds its own `mfa-state` and tries collections beside your users collection. Your server code calls `signIn`, `start`, `confirm` and `verify`, and your site builds the pages. API keys can't be on the same collection.
+
+**Works with:**
+- **Hats:** use `isOnFor` and `verify` as Hats' `stepUp` (the two lines are under "Using it"), so switching into a sensitive hat asks for the same authenticator code.
+- **Audit Trail:** pass `onEvent` through Audit Trail's `fromPluginEvent`. MFA's own state writes skip collection hooks, so these events are the only record the trail gets.
+
+**Family:** It's part of the **Identity** family (a working draft): plugins designed to sit together for accounts and access.
+
 ## Install
 
 ```bash
