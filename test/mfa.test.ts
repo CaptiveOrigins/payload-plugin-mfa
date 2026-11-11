@@ -6,8 +6,8 @@ import { BasePayload, buildConfig, createLocalReq, getPayload, type Endpoint, ty
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { afterPasswordSet, allowEnrollment, codeFor, confirm, isOnFor, moveLegacyState, newRecoveryCodesFor, rememberValue, sendEmailCode, signIn, start, statusFor, resetFor, turnOff, mfa, MFA_TRUSTED, verify, type Limiter, type MfaEvent } from '../src/index.js'
-import { deriveKey, open, seal } from '../src/crypto.js'
-import { allowed, optionsOf, sessionBeforeReset } from '../src/core.js'
+import { deriveKey, emailCodeHash, open, seal } from '../src/crypto.js'
+import { acceptCode, allowed, keysOf, loadState, loadUser, optionsOf, rememberValueFor, sessionBeforeReset } from '../src/core.js'
 
 /** A made-up site: staff must use two-step, members may. Codes come from the secret `start` returns. */
 type U = { id: string; email: string; role: string; sessions?: { id: string }[] }
@@ -531,5 +531,193 @@ describe('refusing to start', () => {
     await expect(build({ secret: 'short' })).rejects.toThrow(/at least 32/)
     await expect(build({ collections: [{ slug: 'people', auth: true, fields: [] }] })).rejects.toThrow(/no auth collection/)
     await expect(build({ collections: [{ slug: 'users', auth: { useAPIKey: true }, fields: [] }] })).rejects.toThrow(/API keys/)
+  })
+})
+
+/** Gaps found in the full self-audit (K29, 2026-11-10): fail-closed cases, refusals and access rules. */
+describe('fail-closed cases and refusals (audit K29)', () => {
+  const refresh = async (user: Record<string, unknown>) => {
+    const hooks = payload.collections.users!.config.hooks.beforeOperation ?? []
+    const req = await reqWith({}, user as never)
+    for (const h of hooks) await h({ operation: 'refresh', req, args: {} as never, collection: payload.collections.users!.config, context: {} } as never)
+  }
+  const docOf = async (u: U) => (await state(u)).docId
+  const setState = async (u: U, data: Record<string, unknown>) => payload.db.updateOne({ collection: 'mfa-state', id: await docOf(u), data })
+
+  it('refuses an emailed code once it has expired', async () => {
+    const u = await make()
+    await enrol(u)
+    mail.length = 0
+    await sendEmailCode(payload, { email: u.email })
+    const code = mail.at(-1)!.text
+    await setState(u, { emailCodeExpires: new Date(Date.now() - 1000).toISOString() })
+    expect(await reason(login(u, { code }))).toBe('wrong')
+  })
+
+  it('sends at most three emailed codes per window to one account', async () => {
+    const u = await make()
+    await enrol(u)
+    mail.length = 0
+    for (let i = 0; i < 4; i++) await sendEmailCode(payload, { email: u.email })
+    expect(mail).toHaveLength(3)
+  })
+
+  it('refuses an emailed code sent before a new password, and any emailed code while blocked', async () => {
+    const u = await make()
+    await enrol(u)
+    mail.length = 0
+    await sendEmailCode(payload, { email: u.email })
+    const code = mail.at(-1)!.text
+    await afterPasswordSet(payload, { userId: u.id })
+    expect(await reason(login(u, { code }))).toBe('wrong')
+    // The block alone refuses, even with a live code still stored.
+    const keys = keysOf(payload)
+    const live = { secret: 'x', emailCode: emailCodeHash(keys, '12345678'), emailCodeExpires: new Date(Date.now() + 60_000).toISOString() }
+    expect(acceptCode(keys, live, '12345678')).not.toBeNull()
+    expect(acceptCode(keys, { ...live, emailBlockedUntil: new Date(Date.now() + 60_000).toISOString() }, '12345678')).toBeNull()
+  })
+
+  it('refuses app codes when the secret can’t be opened, still takes a recovery code, and treats an odd state as on', async () => {
+    const u = await make()
+    const { key, recoveryCodes } = await enrol(u)
+    await setState(u, { secret: seal(deriveKey(SECRET, 'another-salt', 'another-info'), key) })
+    expect(await reason(login(u, { code: nextStepCode(key) }))).toBe('wrong')
+    expect(await reason(login(u, { code: recoveryCodes[0]! }))).toBe('signed in')
+    await setState(u, { secret: 'not a sealed value' })
+    expect(await isOnFor(payload, u.id)).toBe(true)
+    expect(await reason(login(u))).toBe('needed')
+  })
+
+  it('confirms only a pending app with its right code, and the confirming code can’t sign in again', async () => {
+    const u = await make()
+    await expect(confirm(payload, { userId: u.id, code: '123456' })).rejects.toMatchObject({ reason: 'noPending' })
+    const { key } = await start(payload, { userId: u.id })
+    const wrong = codeFor(key, Date.now() + 5 * 60_000) // a real code, but too far ahead
+    await expect(confirm(payload, { userId: u.id, code: wrong })).rejects.toMatchObject({ reason: 'wrongCode' })
+    expect(await isOnFor(payload, u.id)).toBe(false)
+    const used = nextStepCode(key)
+    await confirm(payload, { userId: u.id, code: used })
+    expect(await reason(login(u, { code: used }))).toBe('wrong')
+  })
+
+  it('ends a remembered browser when a new app is set up, and refuses a value that claims more than the window', async () => {
+    const u = await make()
+    const { recoveryCodes } = await enrol(u)
+    const remember = await rememberValue(payload, { userId: u.id })
+    const user = (await loadUser(payload, u.id))!
+    const tooLong = rememberValueFor(payload, user, (await loadState(payload, u.id)).state, Date.now() + 60 * 60_000)
+    expect(await reason(login(u, { remember: tooLong }))).toBe('needed')
+    const { key: newKey } = await start(payload, { userId: u.id, code: recoveryCodes[0]! })
+    await confirm(payload, { userId: u.id, code: codeFor(newKey) })
+    expect(await reason(login(u, { remember }))).toBe('needed')
+  })
+
+  it('a remembered sign-in counts from when the code was given, so its session can’t outlive the window', async () => {
+    const u = await make()
+    await enrol(u)
+    const user = (await loadUser(payload, u.id))!
+    const old = rememberValueFor(payload, user, (await loadState(payload, u.id)).state, Date.now() - 23 * 60 * 60_000)
+    expect(await reason(login(u, { remember: old }))).toBe('signed in')
+    const sid = (await state(u)).sessions!.at(-1)!.id
+    await expect(refresh({ ...u, _sid: sid })).rejects.toThrow()
+    const fresh = await rememberValue(payload, { userId: u.id })
+    await login(u, { remember: fresh })
+    await refresh({ ...u, _sid: (await state(u)).sessions!.at(-1)!.id })
+  })
+
+  it('refuses a refresh for an account that must have two-step and doesn’t, including when the rule throws', async () => {
+    const u = await make()
+    await login(u)
+    const sid = (await state(u)).sessions!.at(-1)!.id
+    await refresh({ ...u, _sid: sid })
+    await expect(refresh({ ...u, role: 'staff', _sid: sid })).rejects.toThrow()
+    await expect(refresh({ ...u, role: 'broken', _sid: sid })).rejects.toThrow()
+  })
+
+  it('verify() refuses an account without two-step, and stops after five wrong codes', async () => {
+    const off = await make()
+    expect(await verify(payload, { user: off as never, code: '123456' })).toBe(false)
+    const u = await make()
+    const { key } = await enrol(u)
+    for (let i = 0; i < 5; i++) await verify(payload, { user: u as never, code: '000000' })
+    expect(await verify(payload, { user: u as never, code: nextStepCode(key) })).toBe(false)
+  })
+
+  it('turnOff and newRecoveryCodesFor refuse without two-step, refuse a wrong code, and stop at the limit', async () => {
+    const off = await make()
+    await expect(turnOff(payload, { userId: off.id, code: '123456' })).rejects.toMatchObject({ reason: 'notOn' })
+    await expect(newRecoveryCodesFor(payload, { userId: off.id, code: '123456' })).rejects.toMatchObject({ reason: 'notOn' })
+    const u = await make()
+    const { key } = await enrol(u)
+    // confirm counted one try, so four wrong codes reach the limit of five.
+    for (let i = 0; i < 4; i++) await expect(turnOff(payload, { userId: u.id, code: '000000' })).rejects.toMatchObject({ reason: 'wrongCode' })
+    await expect(turnOff(payload, { userId: u.id, code: nextStepCode(key) })).rejects.toMatchObject({ reason: 'tooMany' })
+    expect(await isOnFor(payload, u.id)).toBe(true)
+  })
+
+  it('limits per address on top of per account, across accounts', async () => {
+    const ip = { 'x-test-ip': '192.0.2.77' }
+    for (let i = 0; i < 5; i++) {
+      const v = await make()
+      await enrol(v)
+      await reason(login(v, { code: '000000', req: await reqWith(ip) }))
+    }
+    const u = await make()
+    const { key } = await enrol(u)
+    expect(await reason(login(u, { code: nextStepCode(key), req: await reqWith(ip) }))).toBe('wrong')
+    expect(await reason(login(u, { code: nextStepCode(key), req: await reqWith({ 'x-test-ip': '192.0.2.78' }) }))).toBe('signed in')
+  })
+
+  it('keeps both of its collections closed to every API read and write', async () => {
+    const u = await make()
+    await enrol(u)
+    const as = { overrideAccess: false, user: { ...u, collection: 'users' } as never }
+    const doc = await docOf(u)
+    await expect(payload.find({ collection: 'mfa-attempts' as never, ...as })).rejects.toThrow()
+    await expect(payload.create({ collection: 'mfa-state' as never, data: { user: 'someone-else' } as never, ...as })).rejects.toThrow()
+    await expect(payload.update({ collection: 'mfa-state' as never, id: doc, data: { secret: null } as never, ...as })).rejects.toThrow()
+    await expect(payload.delete({ collection: 'mfa-state' as never, id: doc, ...as })).rejects.toThrow()
+    await expect(payload.create({ collection: 'mfa-attempts' as never, data: { keyHash: 'x', at: new Date().toISOString() } as never, ...as })).rejects.toThrow()
+    expect(await isOnFor(payload, u.id)).toBe(true)
+  })
+
+  it('never puts an email or client address in an event', async () => {
+    events.length = 0
+    const u = await make()
+    const { key } = await enrol(u)
+    await sendEmailCode(payload, { email: u.email, req: await reqWith({ 'x-test-ip': '192.0.2.200' }) })
+    for (let i = 0; i < 6; i++) await reason(login(u, { code: '000000', req: await reqWith({ 'x-test-ip': '192.0.2.200' }) }))
+    await reason(login(u, { code: nextStepCode(key) }))
+    expect(events.some((e) => e.type === 'email-code-sent')).toBe(true)
+    const text = JSON.stringify(events)
+    expect(text).not.toContain(u.email)
+    expect(text).not.toContain('192.0.2.200')
+  })
+
+  it('the login endpoint ignores a trusted flag in the body, refuses a wrong code, and sets the remember cookie HttpOnly', async () => {
+    const ep = (payload.collections.users!.config.endpoints as Endpoint[]).find((e) => e.path === '/mfa/login')!
+    const post = async (body: unknown, headers: Record<string, string> = {}) => {
+      const req = await reqWith({ 'content-type': 'application/json', ...headers })
+      ;(req as unknown as { json: () => Promise<unknown> }).json = async () => body
+      return ep.handler(req)
+    }
+    const u = await make()
+    const { key } = await enrol(u)
+    expect(await (await post({ email: u.email, password: PW, [MFA_TRUSTED]: true, context: { [MFA_TRUSTED]: true } })).json()).toEqual({ ok: false, mfa: 'needed' })
+    expect(await (await post({ email: u.email, password: PW, code: '000000' })).json()).toEqual({ ok: false, mfa: 'wrong' })
+    const ok = await post({ email: u.email, password: PW, code: nextStepCode(key) })
+    const cookie = ok.headers.getSetCookie().find((c) => c.startsWith('payload-mfa='))!
+    expect(cookie).toMatch(/HttpOnly/)
+    expect(cookie).toMatch(/SameSite=Lax/)
+    const again = await post({ email: u.email, password: PW }, { cookie: cookie.split(';')[0]! })
+    expect(again.status).toBe(200)
+  })
+
+  it('refuses to start when rememberHours isn’t longer than the token, or its collections already exist', async () => {
+    const build = (over: Record<string, unknown>, opts = {}) =>
+      buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('x') }), collections: [{ slug: 'users', auth: true, fields: [] }], ...over, plugins: [mfa(opts)] })
+    await expect(build({}, { rememberHours: 2 })).rejects.toThrow(/rememberHours/)
+    await expect(build({ collections: [{ slug: 'users', auth: { tokenExpiration: 48 * 3600 }, fields: [] }] })).rejects.toThrow(/rememberHours/)
+    await expect(build({ collections: [{ slug: 'users', auth: true, fields: [] }, { slug: 'mfa-state', fields: [] }] })).rejects.toThrow(/already exists/)
   })
 })
