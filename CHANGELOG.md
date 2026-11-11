@@ -2,6 +2,8 @@
 
 ## 0.1.1 (unreleased)
 
+- `onEvent` gets a copy of the request without the entered code, the remember value, the headers (cookies, tokens and the client address) or the body. The raw request used to reach it, so a site logging `event.req` could have stored a code (found by the 2026-11-10 test self-audit).
+
 - `statusFor(payload, userId)`: `{ on, since, recoveryLeft }` for the person's security page, so a site doesn't read the state collection itself.
 - `resetFor(payload, userId, { enrollHours, actor, endSessions })`: a maintainer's reset without a code. It goes through the version-checked write, clears the account's limiter tries, signs the account out everywhere by default (and refuses any session made before the reset, even one a racing sign-in wrote back), opens an enrollment window and sends a `reset` event naming the actor. Both are server-only, with no endpoint. Asked for by the Captive Origins site wiring.
 

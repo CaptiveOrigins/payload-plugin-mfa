@@ -18,6 +18,7 @@ let config: SanitizedConfig
 let mongo: MongoMemoryReplSet
 const mail: { to: string; text: string }[] = []
 const events: MfaEvent[] = []
+const rawEvents: MfaEvent[] = []
 let n = 0
 const email = (name: string) => `${name}-${++n}@example.invalid`
 
@@ -67,7 +68,7 @@ beforeAll(async () => {
         issuer: 'Test site',
         clientAddress: (req) => req.headers?.get?.('x-test-ip') ?? null,
         sendEmailCode: async ({ to, code }) => void mail.push({ to, text: code }),
-        onEvent: (e) => void events.push({ ...e, req: undefined }),
+        onEvent: (e) => void (events.push({ ...e, req: undefined }), rawEvents.push(e)),
         endpoint: true,
       }),
     ],
@@ -719,5 +720,23 @@ describe('fail-closed cases and refusals (audit K29)', () => {
     await expect(build({}, { rememberHours: 2 })).rejects.toThrow(/rememberHours/)
     await expect(build({ collections: [{ slug: 'users', auth: { tokenExpiration: 48 * 3600 }, fields: [] }] })).rejects.toThrow(/rememberHours/)
     await expect(build({ collections: [{ slug: 'users', auth: true, fields: [] }, { slug: 'mfa-state', fields: [] }] })).rejects.toThrow(/already exists/)
+  })
+})
+
+describe('events carry nothing secret', () => {
+  it('gives onEvent a request without the entered code, the remember value, headers or body', async () => {
+    const u = await make()
+    const { key, recoveryCodes } = await enrol(u)
+    rawEvents.length = 0
+    const req = await reqWith({ 'x-test-ip': '203.0.113.9', cookie: 'payload-token=made-up' })
+    await login(u, { code: recoveryCodes[0], req })
+    for (let i = 0; i < 6; i++) await reason(login(u, { code: nextStepCode(key), req: await reqWith({ 'x-test-ip': '203.0.113.9' }) }))
+    expect(rawEvents.length).toBeGreaterThan(0)
+    for (const e of rawEvents) {
+      const text = JSON.stringify({ context: e.req?.context ?? null, headers: [...(e.req?.headers?.entries?.() ?? [])], data: (e.req as { data?: unknown } | undefined)?.data ?? null })
+      expect(text).not.toContain(recoveryCodes[0]!)
+      expect(text).not.toMatch(/203\.0\.113\.9|payload-token|mfaCode|mfaRemember/)
+    }
+    expect(rawEvents.some((e) => e.req?.payload)).toBe(true) // still usable for the audit trail's own write
   })
 })

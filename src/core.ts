@@ -54,8 +54,19 @@ export async function loadState(payload: Payload, userId: string | number, req?:
 /** On whenever there's a secret: it's only ever set with `enabledAt`, and turning off clears it. Anything odd counts as on. */
 export const isOnState = (s: MfaState) => Boolean(s.secret)
 
+/**
+ * Events get a copy of the request without anything secret: no entered code or remember value in its context, no
+ * headers (they hold cookies, tokens and the client address) and no body. The user, the transaction and the rest of
+ * the context stay, so an audit trail can record who and keep its write in the same transaction.
+ */
+export function safeReq(req: PayloadRequest | undefined): PayloadRequest | undefined {
+  if (!req) return undefined
+  const { [MFA_CODE]: _code, [MFA_REMEMBER]: _remember, ...context } = (req.context ?? {}) as Record<string, unknown>
+  return { ...req, context, headers: new Headers(), data: undefined, body: undefined, json: undefined, text: undefined, formData: undefined } as unknown as PayloadRequest
+}
+
 export async function emit(payload: Payload, event: MfaEvent) {
-  await optionsOf(payload).onEvent?.(event)
+  await optionsOf(payload).onEvent?.({ ...event, req: safeReq(event.req) })
 }
 
 /** Loads an account with its hidden fields. */
