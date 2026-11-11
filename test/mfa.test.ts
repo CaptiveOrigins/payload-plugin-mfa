@@ -738,5 +738,21 @@ describe('events carry nothing secret', () => {
       expect(text).not.toMatch(/203\.0\.113\.9|payload-token|mfaCode|mfaRemember/)
     }
     expect(rawEvents.some((e) => e.req?.payload)).toBe(true) // still usable for the audit trail's own write
+    // Walking the whole request, as a logger would, never reaches the app's secret or the database address.
+    const seen = new WeakSet()
+    const walked = JSON.stringify(rawEvents.map((e) => e.req), (_k, v) => (typeof v === 'object' && v !== null ? (seen.has(v) ? undefined : (seen.add(v), v)) : v))
+    expect(walked).not.toContain(SECRET)
+    expect(walked).not.toMatch(/mongodb:\/\//)
+  })
+
+  it('drops the request body from events', async () => {
+    const u = await make()
+    const { recoveryCodes } = await enrol(u)
+    rawEvents.length = 0
+    const req = await reqWith()
+    ;(req as { data?: unknown }).data = { email: u.email, code: recoveryCodes[1] }
+    await login(u, { code: recoveryCodes[1], req })
+    expect(rawEvents.length).toBeGreaterThan(0)
+    for (const e of rawEvents) expect((e.req as { data?: unknown } | undefined)?.data ?? null).toBeNull()
   })
 })

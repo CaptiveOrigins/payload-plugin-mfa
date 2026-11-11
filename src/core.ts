@@ -56,13 +56,19 @@ export const isOnState = (s: MfaState) => Boolean(s.secret)
 
 /**
  * Events get a copy of the request without anything secret: no entered code or remember value in its context, no
- * headers (they hold cookies, tokens and the client address) and no body. The user, the transaction and the rest of
- * the context stay, so an audit trail can record who and keep its write in the same transaction.
+ * headers (they hold cookies, tokens and the client address) and no body. `payload` and the translation helpers stay
+ * usable but aren't enumerable, so walking the object never reaches the app's secret. The transaction and the rest
+ * of the context stay, so an audit trail keeps its write in the same transaction. The actor is `event.user`:
+ * during a sign-in, `req.user` is whoever the request already had, not the person signing in.
  */
 export function safeReq(req: PayloadRequest | undefined): PayloadRequest | undefined {
   if (!req) return undefined
   const { [MFA_CODE]: _code, [MFA_REMEMBER]: _remember, ...context } = (req.context ?? {}) as Record<string, unknown>
-  return { ...req, context, headers: new Headers(), data: undefined, body: undefined, json: undefined, text: undefined, formData: undefined } as unknown as PayloadRequest
+  const copy = { ...req, context, headers: new Headers(), data: undefined, body: undefined, json: undefined, text: undefined, formData: undefined } as Record<string, unknown>
+  // These hold the app's config (its secret and database address). They stay usable, but a logger that walks the
+  // object (JSON.stringify, pino) skips them.
+  for (const k of ['payload', 'i18n', 'payloadDataLoader', 't']) if (k in copy) Object.defineProperty(copy, k, { value: copy[k], enumerable: false, writable: false, configurable: true })
+  return copy as unknown as PayloadRequest
 }
 
 export async function emit(payload: Payload, event: MfaEvent) {

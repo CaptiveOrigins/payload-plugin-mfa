@@ -2,7 +2,7 @@
 
 MFA for Payload (two-step sign-in): an authenticator code after the password, with emailed and recovery codes as backups, each used once, limited per account, and required by a rule you set.
 
-**Status:** early, 0.1.0, not on npm yet. 45 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
+**Status:** early, 0.1.0, not on npm yet. 46 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
 
 ## What it does
 
@@ -28,7 +28,7 @@ export default buildConfig({
     mfa({
       requiredFor: ({ user }) => user.roles?.includes('admin') ?? false,
       issuer: 'My site',
-      onEvent: (event) => auditLog(event), // never contains a code, secret or address
+      onEvent: (event) => auditLog(event), // event.user is the account; event.req has no code, headers or body, and its payload isn't enumerable
     }),
   ],
 })
