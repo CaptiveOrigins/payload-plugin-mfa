@@ -67,7 +67,7 @@ export function safeReq(req: PayloadRequest | undefined): PayloadRequest | undef
   const copy = { ...req, context, headers: new Headers(), data: undefined, body: undefined, json: undefined, text: undefined, formData: undefined } as Record<string, unknown>
   // These hold the app's config (its secret and database address). They stay usable, but a logger that walks the
   // object (JSON.stringify, pino) skips them.
-  for (const k of ['payload', 'i18n', 'payloadDataLoader', 't']) if (k in copy) Object.defineProperty(copy, k, { value: copy[k], enumerable: false, writable: false, configurable: true })
+  for (const k of ['payload', 'i18n', 'payloadDataLoader', 't']) if (k in copy) Object.defineProperty(copy, k, { value: copy[k], enumerable: false, writable: true, configurable: true })
   return copy as unknown as PayloadRequest
 }
 

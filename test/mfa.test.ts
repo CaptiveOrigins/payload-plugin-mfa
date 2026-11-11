@@ -754,5 +754,8 @@ describe('events carry nothing secret', () => {
     await login(u, { code: recoveryCodes[1], req })
     expect(rawEvents.length).toBeGreaterThan(0)
     for (const e of rawEvents) expect((e.req as { data?: unknown } | undefined)?.data ?? null).toBeNull()
+    // An audit trail writes with the event's request: the Local API must accept it.
+    const withReq = rawEvents.find((e) => e.req)!
+    await expect(payload.find({ collection: 'users', limit: 1, overrideAccess: true, req: withReq.req })).resolves.toBeTruthy()
   })
 })
