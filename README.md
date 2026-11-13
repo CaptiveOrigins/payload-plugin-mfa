@@ -27,11 +27,11 @@ MFA for Payload (two-step sign-in): an authenticator code after the password, wi
 ## Install
 
 ```bash
-npm install @captiveorigins/payload-plugin-mfa
+npm install @extantape/payload-plugin-mfa
 ```
 
 ```ts
-import { mfa } from '@captiveorigins/payload-plugin-mfa'
+import { mfa } from '@extantape/payload-plugin-mfa'
 
 export default buildConfig({
   plugins: [

@@ -1,5 +1,5 @@
 {
-  "name": "@captiveorigins/payload-plugin-mfa",
+  "name": "@extantape/payload-plugin-mfa",
   "version": "0.1.0",
   "description": "MFA for Payload (two-step sign-in): an authenticator code after the password, with email and recovery codes as backups, each used once, rate limited per account, and required by a rule you set.",
   "keywords": [
@@ -16,13 +16,13 @@
     "recovery-codes"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/CaptiveOrigins/payload-plugin-mfa#readme",
+  "homepage": "https://github.com/ExtantApe/payload-plugin-mfa#readme",
   "bugs": {
-    "url": "https://github.com/CaptiveOrigins/payload-plugin-mfa/issues"
+    "url": "https://github.com/ExtantApe/payload-plugin-mfa/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CaptiveOrigins/payload-plugin-mfa.git"
+    "url": "git+https://github.com/ExtantApe/payload-plugin-mfa.git"
   },
   "type": "module",
   "exports": {
