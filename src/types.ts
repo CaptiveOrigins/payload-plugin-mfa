@@ -46,7 +46,7 @@ export type MfaOptions = {
   /** The auth collection. Default `users`. */
   users?: string
   /**
-   * Captive Origins kept this state in a group on the account (`twoStep`). Name it here, remove it from the auth
+   * A site that kept this state in a group on the account (`twoStep`, say) names it here. Remove it from the auth
    * collection, and run `moveLegacyState(payload)` once as a script. Until an account's old state is moved, it can't sign in.
    */
   legacyUserField?: string

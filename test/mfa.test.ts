@@ -462,14 +462,14 @@ describe('telling nothing, keeping nothing readable', () => {
     await expect(payload.find({ collection: 'mfa-state' as never, overrideAccess: false, user: { ...u, collection: 'users' } as never })).rejects.toThrow()
   })
 
-  it('opens an app secret sealed the way Captive Origins seals them today, with its key settings', () => {
+  it('opens an app secret sealed the way a site seals them today, with its key settings', () => {
     // The site's sealSecret (src/lib/security/twoStep.ts), copied as it is.
-    const siteKey = Buffer.from(hkdfSync('sha256', SECRET, 'captive-origins', 'two-step-secret', 32))
+    const siteKey = Buffer.from(hkdfSync('sha256', SECRET, 'example-site', 'two-step-secret', 32))
     const iv = randomBytes(12)
     const cipher = createCipheriv('aes-256-gcm', siteKey, iv)
     const body = Buffer.concat([cipher.update('JBSWY3DPEHPK3PXP', 'utf8'), cipher.final()])
     const sealed = [iv, cipher.getAuthTag(), body].map((p) => p.toString('base64url')).join('.')
-    expect(open(deriveKey(SECRET, 'captive-origins', 'two-step-secret'), sealed)).toBe('JBSWY3DPEHPK3PXP')
+    expect(open(deriveKey(SECRET, 'example-site', 'two-step-secret'), sealed)).toBe('JBSWY3DPEHPK3PXP')
     expect(open(deriveKey(SECRET, 'payload-plugin-two-step', 'two-step-secret'), sealed)).toBeNull()
   })
 })
@@ -494,16 +494,16 @@ describe('the login endpoint', () => {
   })
 })
 
-describe('moving state Captive Origins kept on the account', () => {
+describe('moving state a site kept on the account', () => {
   it('refuses an account with unmoved state, moves it with an explicit run (safe to repeat), and keeps two-step on', async () => {
     const legacyCfg = (fields: any[] = []) =>
-      buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('legacy'), ensureIndexes: true }), collections: [{ slug: 'users', auth: true, fields }], plugins: [mfa({ legacyUserField: 'twoStep', keyDerivation: { salt: 'captive-origins', info: 'two-step-secret' } })] })
+      buildConfig({ secret: SECRET, telemetry: false, typescript: { autoGenerate: false }, db: mongooseAdapter({ url: mongo.getUri('legacy'), ensureIndexes: true }), collections: [{ slug: 'users', auth: true, fields }], plugins: [mfa({ legacyUserField: 'twoStep', keyDerivation: { salt: 'example-site', info: 'two-step-secret' } })] })
     await expect(legacyCfg([{ name: 'twoStep', type: 'group', fields: [{ name: 'secret', type: 'text' }] }])).rejects.toThrow(/remove the "twoStep" field/)
     const first = await new BasePayload().init({ config: await legacyCfg() })
     const u = (await first.create({ collection: 'users', data: { email: 'legacy@example.invalid', password: PW } as never })) as unknown as U
     const secret = 'JBSWY3DPEHPK3PXP'
-    const sealed = seal(deriveKey(SECRET, 'captive-origins', 'two-step-secret'), secret)
-    // The account as Captive Origins stores it today: the group on the account, sealed with its key settings.
+    const sealed = seal(deriveKey(SECRET, 'example-site', 'two-step-secret'), secret)
+    // The account as the site stores it today: the group on the account, sealed with its key settings.
     await (first.db as any).collections.users.collection.updateOne({ email: 'legacy@example.invalid' }, { $set: { twoStep: { secret: sealed, enabledAt: new Date().toISOString(), recovery: [] } } })
     const half = (await first.create({ collection: 'users', data: { email: 'half@example.invalid', password: PW } as never })) as unknown as U
     await (first.db as any).collections.users.collection.updateOne({ email: 'half@example.invalid' }, { $set: { twoStep: { pending: sealed } } })

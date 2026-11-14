@@ -179,8 +179,8 @@ async function hasUnmovedState(payload: Payload, o: Resolved, userId: string | n
 }
 
 /**
- * Moves state Captive Origins kept on the account (`legacyUserField`, e.g. `twoStep`) into the plugin's collection.
- * Run it once, as a script, after a backup (on Captive Origins, with the owner's yes). For each account with old
+ * Moves state a site kept on the account (`legacyUserField`, e.g. `twoStep`) into the plugin's collection.
+ * Run it once, as a script, after a backup (with the site owner's yes). For each account with old
  * state: copy it if the account has no new state yet (an existing one counts as moved), then remove the old field.
  * A setup that was never confirmed (a pending app, no secret) is dropped, and counted in the log. Safe to run again.
  */

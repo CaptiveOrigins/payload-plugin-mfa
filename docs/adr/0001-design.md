@@ -4,7 +4,7 @@ Status: proposed, 2026-11-10. Lead: Plugin Security. Independent pre-publish sec
 
 ## Context
 
-Payload has no second factor. Captive Origins built one in the site (`src/lib/security/twoStep.ts`, the Users hooks and the My Information actions), and the owner wants staff to need it (N62) on a site with kids. Hats asks for a second factor before switching into a sensitive hat, through its `stepUp` option. Under `rules/build-it-right.md`, this becomes its own plugin: it works on any Payload site, and other plugins reach it through small adapters, never imports.
+Payload has no second factor. The first site built one itself (`src/lib/security/twoStep.ts`, the Users hooks and the My Information actions), and the owner wants staff to need it (N62) on a site with kids. Hats asks for a second factor before switching into a sensitive hat, through its `stepUp` option. Under `rules/build-it-right.md`, this becomes its own plugin: it works on any Payload site, and other plugins reach it through small adapters, never imports.
 
 The site's version has been audited and works. This ADR keeps its behavior and fixes what an extraction would otherwise carry over.
 
@@ -13,7 +13,7 @@ The site's version has been audited and works. This ADR keeps its behavior and f
 1. **Factors.** An authenticator app code (TOTP, SHA-1, 6 digits, 30 s, ±1 step) is the main one. The backups are an emailed code (8 digits, so it can't be mistaken for an app code; used once; 10 minutes) and recovery codes (10, 80 bits each, shown once). No text messages, ever (cost and SIM-swap). Passkeys are a possible 0.2, not part of 0.1.
 
 2. **Storage.** A hidden `twoStep` group on the auth collection, with field access false for read, create and update, so only the plugin's own server code touches it.
-   - The app secret is sealed with AES-256-GCM. The key is derived by HKDF-SHA256 from the app's secret, with `salt` and `info` options (defaults `payload-plugin-two-step` and `two-step-secret`). The site passes its current values (`captive-origins`, `two-step-secret`) so existing secrets keep working, with **no database migration**. Field names stay as the site has them.
+   - The app secret is sealed with AES-256-GCM. The key is derived by HKDF-SHA256 from the app's secret, with `salt` and `info` options (defaults `payload-plugin-two-step` and `two-step-secret`). The site passes its current values (its own salt and `two-step-secret`) so existing secrets keep working, with **no database migration**. Field names stay as the site has them.
    - Recovery codes are stored as SHA-256 hashes, and email codes as HMACs under the derived key, so a copy of the database alone gives none of them.
    - If the app's secret changes, app codes stop working and recovery codes still do. This is documented.
 
@@ -96,7 +96,7 @@ Platform read this ADR at `87d92cd`. Each point, and what changed:
 
 1. **Must: the per-account limit must not include the address.** Done in decision 7: always per account, with an optional per-address limit on top. Test: 5 wrong codes from address A, then the 6th from B is still refused.
 2. **Must: `start()` on an account already on.** Done in decision 10: it needs a current app or recovery code.
-3. **Must: API keys and custom strategies skip `beforeLogin`.** The plugin **refuses to start if the auth collection has `useAPIKey` on**. Custom auth strategies are documented as the site's job, with `isOn(user)` and `requiredFor` exported for the site to use. Captive Origins has no API keys.
+3. **Must: API keys and custom strategies skip `beforeLogin`.** The plugin **refuses to start if the auth collection has `useAPIKey` on**. Custom auth strategies are documented as the site's job, with `isOn(user)` and `requiredFor` exported for the site to use. The first site has no API keys.
 4. **Should: `verifiedAt` per session.** Done in decision 5, keyed by `sid`. Test: a code on device A doesn't extend device B.
 5. **Should: last TOTP step.** Every accepted app code stores its step, and any step ≤ the last is refused; the `version` guard covers races. Test: the same code is refused even after waiting one step, while still in the drift window.
 6. **Should: requirement on sessions that never refresh.** The plugin wraps the auth strategies of the users collection (as Hats does): a session whose account is now required but hasn't enrolled is signed out on its next request. The README says what this costs (one `requiredFor` call per authenticated request).
@@ -118,7 +118,7 @@ Platform reproduced three problems against Payload 3.92's real `login`. All are 
 3. **Should: per-session records and `lastStep`** stopped being lost once the state moved; the refresh tests pass on the new collection.
 4. **Smaller: a remembered sign-in whose session record loses a race** now reads the state again and tries once more, and logs if that fails too.
 
-Found while doing this: **the key must come from the raw app secret** (`payload.config.secret`), as Captive Origins derives it. `payload.secret` is Payload's own hash of it and gives a different key, which would have left the site's stored authenticator secrets unreadable. The move test proves a secret sealed the site's way opens and signs in.
+Found while doing this: **the key must come from the raw app secret** (`payload.config.secret`), as the first site derives it. `payload.secret` is Payload's own hash of it and gives a different key, which would have left the site's stored authenticator secrets unreadable. The move test proves a secret sealed the site's way opens and signs in.
 
 ## Renamed, and Platform's final read (2026-11-10)
 

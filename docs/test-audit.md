@@ -41,7 +41,7 @@ Read the README, `docs/decisions.md`, ADR 0001 and `src/`, and mapped each promi
 | Both collections are closed to every API read and write | `fail-closed… > keeps both of its collections closed…` (new) |
 | The endpoint answers an unknown email like a wrong password, needs a code, sets the cookies | `the login endpoint > answers an unknown email…` |
 | The endpoint ignores a trusted flag in the body, refuses a wrong code, sets the remember cookie HttpOnly and SameSite=Lax, and takes it back | `fail-closed… > the login endpoint ignores a trusted flag…` (new) |
-| Secrets sealed the way Captive Origins seals them open | `telling nothing… > opens an app secret sealed…` |
+| Secrets sealed the way the first site seals them open | `telling nothing… > opens an app secret sealed…` |
 | Unmoved legacy state can't sign in; the move is explicit and repeatable | `moving state… > refuses an account with unmoved state…` |
 | Refuses to start: short secret, no auth collection, API keys, legacy field declared | `refusing to start > …`, `moving state…` |
 | Refuses to start: `rememberHours` not longer than the token, or a clashing collection | `fail-closed… > refuses to start when rememberHours…` (new) |
@@ -125,7 +125,7 @@ Each promise in the README and ADR 0001, and the test that proves it (`test/mfa.
 | Step-up `verify`; one winner under concurrency | "verify() takes a good code once…" (fails without the version guard) |
 | Same answer for unknown addresses | "sends nothing, and says nothing different…" |
 | No codes or secrets in events; state hidden from API reads | "never puts a code or secret…" |
-| Secrets sealed by Captive Origins today open | "opens an app secret sealed the way…" |
+| Secrets sealed by the first site today open | "opens an app secret sealed the way…" |
 | Endpoint: unknown email like a wrong password; needs a code; sets cookies | "answers an unknown email like a wrong password…" |
 | Startup refusals (short secret, no auth collection, API keys) | "with a short app secret…" |
 | A sign-in begun earlier can't turn two-step off | "a sign-in that began before two-step was confirmed…" (Platform's repro) |

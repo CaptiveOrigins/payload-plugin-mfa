@@ -26,7 +26,7 @@ export const keysOf = (payload: Payload): Keys => {
   let k = keyCache.get(payload)
   if (!k) {
     const o = optionsOf(payload)
-    // The raw app secret, as Captive Origins derives it: `payload.secret` is Payload's own hash of it, which would give another key.
+    // The raw app secret, as the first site derives it: `payload.secret` is Payload's own hash of it, which would give another key.
     k = deriveKey(payload.config.secret, o.keyDerivation.salt, o.keyDerivation.info)
     keyCache.set(payload, k)
   }

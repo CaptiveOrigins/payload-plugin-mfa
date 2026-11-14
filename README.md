@@ -2,7 +2,7 @@
 
 MFA for Payload (two-step sign-in): an authenticator code after the password, with emailed and recovery codes as backups, each used once, limited per account, and required by a rule you set.
 
-**Status:** early, 0.1.0, not on npm yet. 46 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version Captive Origins runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
+**Status:** early, 0.1.0, not on npm yet. 46 tests pass against a real Payload 3.92 with an in-memory MongoDB, covering every factor, replays, the limits (including 40 tries at once), remembered browsers, per-session expiry, the required rule, the login endpoint, and races with Payload's own sign-in (a sign-in begun earlier can't undo two-step or reuse a code). It's extracted from the version a live site runs, but this package itself isn't in use on any site yet, and it has no screens of its own: your site builds the sign-in and settings pages.
 
 ## What it does
 
@@ -68,8 +68,8 @@ HTTP can't carry the code: it travels in `req.context`, which only your server c
 
 ## Moving from state kept on the account
 
-If your site kept two-step state in a group on the account (Captive Origins did, as `twoStep`):
-1. Back up the database. On Captive Origins this needs the owner's yes before it runs on prod.
+If your site kept two-step state in a group on the account (the first site did, as `twoStep`):
+1. Back up the database. Get the site owner's yes before it runs on production.
 2. Remove that field from the auth collection and pass `legacyUserField: 'twoStep'`, plus the `keyDerivation` values you used. The plugin refuses to start while the field is still declared.
 3. Run `await moveLegacyState(payload)` once, as a script. It copies each account's old state where the account has none yet (one that already exists counts as moved), removes the old field, and returns what it did. A setup that was never confirmed is dropped and counted. It's safe to run again. MongoDB only.
 
