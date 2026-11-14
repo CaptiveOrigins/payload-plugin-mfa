@@ -1,6 +1,6 @@
 # Test audit
 
-## 2026-11-10: full self-audit (K29)
+## 2026-11-10: full self-audit
 
 Read the README, `docs/decisions.md`, ADR 0001 and `src/`, and mapped each promise to `test/mfa.test.ts`. The baseline was 29 tests. It's now 44. Every test runs against a real Payload 3.92 with an in-memory MongoDB. Nothing here is mocked except the limiter in the key test and the clock (backdated state).
 
@@ -34,7 +34,7 @@ Read the README, `docs/decisions.md`, ADR 0001 and `src/`, and mapped each promi
 | `turnOff` and `newRecoveryCodesFor` refuse without two-step, refuse a wrong code, and are limited | `fail-closed… > turnOff and newRecoveryCodesFor refuse…` (new) |
 | `verify` takes a good code once; one winner under concurrency | `step-up > verify() takes a good code once…` |
 | `verify` refuses an account without two-step, and is limited | `fail-closed… > verify() refuses an account without two-step…` (new) |
-| `statusFor`, `resetFor` | the K25 section below |
+| `statusFor`, `resetFor` | the statusFor and resetFor section below |
 | `sendEmailCode` answers the same for an unknown address | `telling nothing… > sends nothing…` |
 | Events carry no code, secret, email or client address in their fields | `telling nothing… > never puts a code or secret…`, `fail-closed… > never puts an email or client address…` (new) |
 | The state is hidden from API reads | `telling nothing… > never puts a code or secret…` |
@@ -48,7 +48,7 @@ Read the README, `docs/decisions.md`, ADR 0001 and `src/`, and mapped each promi
 
 ### Gaps added
 
-The 15 tests in `fail-closed cases and refusals (audit K29)`, listed as "(new)" above. Most are fail-closed checks or refusals that were promised but only exercised on the happy path, or not at all: an expired emailed code, the emailed-code send limit, the per-address limit, the refresh check for required accounts, the remember window's upper bound, a remembered session dated from its code, the limiter on `verify`, `turnOff` and `newRecoveryCodesFor`, write and delete access on both collections, and the endpoint ignoring a trusted flag in its body.
+The 15 tests in `fail-closed cases and refusals (full self-audit)`, listed as "(new)" above. Most are fail-closed checks or refusals that were promised but only exercised on the happy path, or not at all: an expired emailed code, the emailed-code send limit, the per-address limit, the refresh check for required accounts, the remember window's upper bound, a remembered session dated from its code, the limiter on `verify`, `turnOff` and `newRecoveryCodesFor`, write and delete access on both collections, and the endpoint ignoring a trusted flag in its body.
 
 ### Mutation check
 
@@ -128,15 +128,15 @@ Each promise in the README and ADR 0001, and the test that proves it (`test/mfa.
 | Secrets sealed by the first site today open | "opens an app secret sealed the way…" |
 | Endpoint: unknown email like a wrong password; needs a code; sets cookies | "answers an unknown email like a wrong password…" |
 | Startup refusals (short secret, no auth collection, API keys) | "with a short app secret…" |
-| A sign-in begun earlier can't turn two-step off | "a sign-in that began before two-step was confirmed…" (Platform's repro) |
-| A recovery code signs in once against an earlier-begun sign-in | "one recovery code signs in once…" (Platform's repro) |
+| A sign-in begun earlier can't turn two-step off | "a sign-in that began before two-step was confirmed…" (the reviewer's repro) |
+| A recovery code signs in once against an earlier-begun sign-in | "one recovery code signs in once…" (the reviewer's repro) |
 | The limiter holds under 40 tries at once | "the built-in limit lets at most five…" (fails with count-then-record) |
 | Old state: refused until moved, moved by an explicit run (repeatable), then signs in | "refuses an account with unmoved state…" (also proves the raw-secret key) |
 | Old tries are deleted | "deletes tries older than the window…" |
 
 Gaps, skipped with reason: the built-in limiter's window rollover (simple count-since-time code, covered by the per-account test's refusal); `rememberHours` versus `tokenExpiration` at startup (a config check, low risk). Bigger: a test against a real browser flow belongs to the site's wiring.
 
-## 2026-11-10: statusFor and resetFor (K25)
+## 2026-11-10: statusFor and resetFor
 
 | Promise | Test |
 | --- | --- |
@@ -149,4 +149,4 @@ Gaps, skipped with reason: the built-in limiter's window rollover (simple count-
 | turnOff keeps the reset time; an undated session is refused, a later one isn't, no reset means no check | `status and a maintainer's reset > signs the account out…` |
 | resetFor wins against a racing write that would keep the old secret | `status and a maintainer's reset > wins against a racing write…` |
 
-Gaps added: the five tests above; the last two after the security read (a subagent, Plugin Security's checklist) found the version guard, the upper bound and the kept email block caught only elsewhere or not at all. A mutation check now catches 9 of 9 guards in these tests, after one assertion was added: kept recovery codes weren't caught at first, because a required account is refused for enrollment before any code is checked. Gaps skipped: a site's own limiter isn't cleared by resetFor (said in the README).
+Gaps added: the five tests above; the last two after the security read (a subagent, using the plugin security checklist) found the version guard, the upper bound and the kept email block caught only elsewhere or not at all. A mutation check now catches 9 of 9 guards in these tests, after one assertion was added: kept recovery codes weren't caught at first, because a required account is refused for enrollment before any code is checked. Gaps skipped: a site's own limiter isn't cleared by resetFor (said in the README).

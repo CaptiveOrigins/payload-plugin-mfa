@@ -237,7 +237,7 @@ describe('limits', () => {
   })
 })
 
-/** Holds Payload login's first read of the account (made before its transaction) until released. Platform's repro, adapted. */
+/** Holds Payload login's first read of the account (made before its transaction) until released. The reviewer's repro, adapted. */
 function holdLoginRead() {
   let release!: () => void
   const gate = new Promise<void>((r) => (release = r))
@@ -535,8 +535,8 @@ describe('refusing to start', () => {
   })
 })
 
-/** Gaps found in the full self-audit (K29, 2026-11-10): fail-closed cases, refusals and access rules. */
-describe('fail-closed cases and refusals (audit K29)', () => {
+/** Gaps found in the full self-audit (2026-11-10): fail-closed cases, refusals and access rules. */
+describe('fail-closed cases and refusals (full self-audit)', () => {
   const refresh = async (user: Record<string, unknown>) => {
     const hooks = payload.collections.users!.config.hooks.beforeOperation ?? []
     const req = await reqWith({}, user as never)

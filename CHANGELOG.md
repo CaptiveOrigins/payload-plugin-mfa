@@ -13,9 +13,9 @@ Tested: 5 new tests (29 in all), including a reset racing a write that would kee
 
 ## 0.1.0 (unreleased)
 
-First version, as `payload-plugin-mfa` (renamed from payload-plugin-two-step by the owner, 2026-11-10), extracted from the first site's own two-step sign-in, with the decisions in `docs/adr/0001-design.md` (including Platform's pre-publish read): factors, use-once codes with a race guard, per-account limits with keys built inside, the required rule at sign-in, refresh and every request, per-session expiry, remembered browsers, email codes blocked after a reset, step-up `verify`, and the login endpoint.
+First version, as `payload-plugin-mfa` (renamed from payload-plugin-two-step by the owner, 2026-11-10), extracted from the first site's own two-step sign-in, with the decisions in `docs/adr/0001-design.md` (including the pre-publish read): factors, use-once codes with a race guard, per-account limits with keys built inside, the required rule at sign-in, refresh and every request, per-session expiry, remembered browsers, email codes blocked after a reset, step-up `verify`, and the login endpoint.
 
-- The state lives in its own `two-step-state` collection, not on the account, so Payload's sign-in can't write old state back (found by Platform's read). `moveLegacyState` moves state kept on the account, run once as a script; until then those accounts can't sign in.
+- The state lives in its own `two-step-state` collection, not on the account, so Payload's sign-in can't write old state back (found by the pre-publish read). `moveLegacyState` moves state kept on the account, run once as a script; until then those accounts can't sign in.
 - The built-in limiter records each try before counting it, so tries at once can't outrun it.
 - The key comes from the raw app secret, as the first site derives it.
 - Tries older than the window are deleted as new ones arrive.

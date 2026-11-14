@@ -1,10 +1,10 @@
 # ADR 0001: Two-step sign-in for Payload, the design
 
-Status: proposed, 2026-11-10. Lead: Plugin Security. Independent pre-publish security read: Platform. Approved as an agnostic plugin by the owner, 2026-11-10 (relayed by Helm).
+Status: proposed, 2026-11-10. Independent pre-publish security read: see the sections below. Approved as an agnostic plugin by the owner, 2026-11-10.
 
 ## Context
 
-Payload has no second factor. The first site built one itself (`src/lib/security/twoStep.ts`, the Users hooks and the My Information actions), and the owner wants staff to need it (N62) on a site with kids. Hats asks for a second factor before switching into a sensitive hat, through its `stepUp` option. Under `rules/build-it-right.md`, this becomes its own plugin: it works on any Payload site, and other plugins reach it through small adapters, never imports.
+Payload has no second factor. The first site built one itself (`src/lib/security/twoStep.ts`, the Users hooks and the My Information actions), and the owner wants staff to need it on a site with kids. Hats asks for a second factor before switching into a sensitive hat, through its `stepUp` option. So it becomes its own plugin: it works on any Payload site, and other plugins reach it through small adapters, never imports.
 
 The site's version has been audited and works. This ADR keeps its behavior and fixes what an extraction would otherwise carry over.
 
@@ -90,9 +90,9 @@ The sign-in, My Information and reset pages and their wording (the plugin return
 
 - The default React panel and passkeys are left for 0.2. Nothing is promised in 0.1.
 
-## Changes after Platform's pre-publish read (2026-11-10)
+## Changes after the pre-publish read (2026-11-10)
 
-Platform read this ADR at `87d92cd`. Each point, and what changed:
+The reviewer read this ADR at `87d92cd`. Each point, and what changed:
 
 1. **Must: the per-account limit must not include the address.** Done in decision 7: always per account, with an optional per-address limit on top. Test: 5 wrong codes from address A, then the 6th from B is still refused.
 2. **Must: `start()` on an account already on.** Done in decision 10: it needs a current app or recovery code.
@@ -105,11 +105,11 @@ Platform read this ADR at `87d92cd`. Each point, and what changed:
 9. **Should: constant-time comparisons.** The email-code HMAC, the recovery hash and the remember HMAC all use `timingSafeEqual` (recovery is checked against every stored hash, not with `includes`).
 10. **Note.** The README says the plugin's own state writes use `updateOne` (so they skip audit hooks), and that `onEvent` is the record.
 
-Not changed: `TRUSTED` through `req.context`, and unsalted SHA-256 for 80-bit recovery codes. Platform agreed both are fine.
+Not changed: `TRUSTED` through `req.context`, and unsalted SHA-256 for 80-bit recovery codes. The reviewer agreed both are fine.
 
-## Changes after Platform's read of the code (2026-11-10, at `44f484f`)
+## Changes after the reviewer's read of the code (2026-11-10, at `44f484f`)
 
-Platform reproduced three problems against Payload 3.92's real `login`. All are fixed, and Platform's repro tests are in the suite, adapted.
+The reviewer reproduced three problems against Payload 3.92's real `login`. All are fixed, and the reviewer's repro tests are in the suite, adapted.
 
 1. **Blocker: Payload wrote old two-step state back over new.** `login` reads the account before its transaction, then `addSessionToUser` writes that whole stale copy back, so a sign-in that began earlier could turn two-step off again or bring a used code back, version included. **Decision 2 is replaced:** the state lives in the plugin's own `two-step-state` collection, one document per account (unique `user`, access false), which nothing in Payload's sign-in, refresh or logout touches. The version guard works as designed there.
    - This **replaces "no migration"**. With `legacyUserField: 'twoStep'`, the plugin moves state kept on the account into its collection once at startup (copying only where the account has none yet), then removes it from the account. It refuses to start while the auth collection still declares that field.
@@ -120,7 +120,7 @@ Platform reproduced three problems against Payload 3.92's real `login`. All are 
 
 Found while doing this: **the key must come from the raw app secret** (`payload.config.secret`), as the first site derives it. `payload.secret` is Payload's own hash of it and gives a different key, which would have left the site's stored authenticator secrets unreadable. The move test proves a secret sealed the site's way opens and signs in.
 
-## Renamed, and Platform's final read (2026-11-10)
+## Renamed, and the reviewer's final read (2026-11-10)
 
 - **Renamed** to `payload-plugin-mfa` by the owner (see `docs/decisions.md`). The text above keeps its original names (two-step, `twoStep()`, `two-step-state`); in the code they're now `mfa()`, `MfaError`, `MFA_*`, `mfa-state` and `mfa-attempts`.
 - **Attempt records expire.** Every try writes a record, refused ones included. Tries older than the window are now deleted as new ones arrive, with a test.
